@@ -35,6 +35,13 @@ Serial defaults: 9600 8E1. Adjust if your installation differs.
   - Copy `.env.example` to `.env` and fill `INV_DEV` and `SHINE_DEV` using `/dev/serial/by-path` entries
   - `docker compose up -d`
 
+If your environment lacks docker compose (e.g., Home Assistant SSH add‑on), use the helper script:
+
+- Copy `.env.example` to `.env` and edit device paths
+- Run:
+  - `scripts/run-ha.sh`
+  - Then: `docker logs -f growatt-rtu-broker`
+
 ### Parameters
 - `--inverter` RS‑485 device to inverter (required)
 - `--shine` RS‑485/serial device for Shine (required)
