@@ -36,7 +36,10 @@ class RTUFramer:
     def __init__(self, ser: serial.Serial, char_time: float, gap_chars: float = 3.5):
         self.ser = ser
         self.char_time = char_time
-        self.gap = gap_chars * char_time
+        # At high baud on Linux, user-space gaps between recv bursts can be > a few ms.
+        # Use 3.5 char times but never below a safe floor to avoid premature frame cuts.
+        gap_floor = 0.020  # 20ms floor
+        self.gap = max(gap_chars * char_time, gap_floor)
         self.buf = bytearray()
         self.last = time.perf_counter()
 
@@ -59,7 +62,8 @@ class RTUFramer:
                         self.buf.clear()
                         return frame
                     return b""
-                time.sleep(self.char_time * 0.5)
+                # Don’t try to sleep sub-millisecond; use a small fixed sleep to reduce CPU
+                time.sleep(max(0.001, self.char_time * 0.5))
 
 
 def now_iso() -> str:
