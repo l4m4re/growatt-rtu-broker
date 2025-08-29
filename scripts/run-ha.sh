@@ -57,6 +57,10 @@ docker run -d \
   --shine "${SHINE_DEV}" \
   --baud "${BAUD:-9600}" \
   --bytes "${BYTES:-8E1}" \
+  ${INV_BAUD:+--inv-baud "$INV_BAUD"} \
+  ${INV_BYTES:+--inv-bytes "$INV_BYTES"} \
+  ${SHINE_BAUD:+--shine-baud "$SHINE_BAUD"} \
+  ${SHINE_BYTES:+--shine-bytes "$SHINE_BYTES"} \
   --tcp "${TCP_BIND:-0.0.0.0:5020}" \
   --min-period "${MIN_PERIOD:-1.0}" \
   --rtimeout "${RTIMEOUT:-1.5}" \
