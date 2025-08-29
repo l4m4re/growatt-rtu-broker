@@ -89,6 +89,16 @@ class WireLogger:
     def __init__(self, path: str = "/var/log/growatt_broker.jsonl"):
         self.path = path
         self._lock = threading.Lock()
+        # Ensure directory and file exist so tail -f works before first event
+        try:
+            import os
+            d = os.path.dirname(self.path) or "."
+            os.makedirs(d, exist_ok=True)
+            with open(self.path, "a", encoding="utf-8"):
+                pass
+        except Exception:
+            # Non-fatal: logging will attempt file creation on first write
+            pass
 
     def log(self, **event):
         event["ts"] = now_iso()
