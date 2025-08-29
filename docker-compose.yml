@@ -12,11 +12,11 @@ services:
       - "/dev/serial/by-path:/dev/serial/by-path"
     command: >-
       growatt-broker
-      --inverter /dev/serial/by-path/<inverter-path>
-      --shine /dev/serial/by-path/<shine-path>
-      --baud 9600
-      --bytes 8E1
-      --tcp 0.0.0.0:5020
-      --min-period 1.0
-      --rtimeout 1.5
-      --log /var/log/growatt_broker.jsonl
+      --inverter ${INV_DEV}
+      --shine ${SHINE_DEV}
+      --baud ${BAUD:-9600}
+      --bytes ${BYTES:-8E1}
+      --tcp ${TCP_BIND:-0.0.0.0:5020}
+      --min-period ${MIN_PERIOD:-1.0}
+      --rtimeout ${RTIMEOUT:-1.5}
+      --log ${LOG_PATH:-/var/log/growatt_broker.jsonl}
