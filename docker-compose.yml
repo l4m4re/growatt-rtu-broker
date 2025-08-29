@@ -10,6 +10,9 @@ services:
       - /var/log:/var/log
     devices:
       - "/dev/serial/by-path:/dev/serial/by-path"
+      # Optional explicit device nodes (uncomment if needed)
+      # - "/dev/ttyUSB0:/dev/ttyUSB0"
+      # - "/dev/ttyUSB1:/dev/ttyUSB1"
     command: >-
       growatt-broker
       --inverter ${INV_DEV}

@@ -23,6 +23,18 @@ echo "Checking devices:"
 ls -l "$INV_DEV" || true
 ls -l "$SHINE_DEV" || true
 
+# Resolve to concrete device nodes (e.g. /dev/ttyUSB0)
+INV_DEV_NODE=$(readlink -f "$INV_DEV" || echo "")
+SHINE_DEV_NODE=$(readlink -f "$SHINE_DEV" || echo "")
+if [ -z "$INV_DEV_NODE" ] || [ ! -e "$INV_DEV_NODE" ]; then
+  echo "Warning: could not resolve INV_DEV to a device node; using path as-is" >&2
+  INV_DEV_NODE="$INV_DEV"
+fi
+if [ -z "$SHINE_DEV_NODE" ] || [ ! -e "$SHINE_DEV_NODE" ]; then
+  echo "Warning: could not resolve SHINE_DEV to a device node; using path as-is" >&2
+  SHINE_DEV_NODE="$SHINE_DEV"
+fi
+
 IMAGE_TAG=growatt-rtu-broker:local
 echo "Building image $IMAGE_TAG ..."
 docker build -t "$IMAGE_TAG" .
@@ -36,7 +48,9 @@ docker run -d \
   --network host \
   --privileged \
   -v /var/log:/var/log \
-  --device /dev/serial/by-path:/dev/serial/by-path \
+  -v /dev/serial/by-path:/dev/serial/by-path \
+  --device "$INV_DEV_NODE":"$INV_DEV_NODE" \
+  --device "$SHINE_DEV_NODE":"$SHINE_DEV_NODE" \
   "$IMAGE_TAG" \
   growatt-broker \
   --inverter "${INV_DEV}" \
