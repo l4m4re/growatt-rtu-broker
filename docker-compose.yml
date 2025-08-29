@@ -1,0 +1,22 @@
+version: "3.8"
+services:
+  broker:
+    build: .
+    container_name: growatt-rtu-broker
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    volumes:
+      - /var/log:/var/log
+    devices:
+      - "/dev/serial/by-path:/dev/serial/by-path"
+    command: >-
+      growatt-broker
+      --inverter /dev/serial/by-path/<inverter-path>
+      --shine /dev/serial/by-path/<shine-path>
+      --baud 9600
+      --bytes 8E1
+      --tcp 0.0.0.0:5020
+      --min-period 1.0
+      --rtimeout 1.5
+      --log /var/log/growatt_broker.jsonl

@@ -1,0 +1,43 @@
+# Use the same patterns as .gitignore where possible
+**/__pycache__
+**/*.py[cod]
+**/*.log
+
+# VCS
+.git
+.gitignore
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+
+# Python packaging and build
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# Tests and coverage
+.tox/
+.nox/
+.pytest_cache/
+.coverage*
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editors/OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid
+
+# Misc
+site/
+**/*.swp
+**/*.swo
