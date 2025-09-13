@@ -8,12 +8,15 @@ Examples:
   growatt-broker run --mode dataset --dataset datasets/min_6000xh_tl.json
   growatt-broker capture --mode dataset --dataset datasets/min_6000xh_tl.json --out session.jsonl
 """
+
 from __future__ import annotations
-import argparse, asyncio, sys
-from pathlib import Path
-from .backend import DatasetBackend, CaptureBackend, Backend, LiveSerialBackend
+import argparse
+import asyncio
+import sys
+from .backend import DatasetBackend, CaptureBackend, Backend
 
 # NOTE: LiveSerialBackend is not implemented yet; selecting --mode live will error out.
+
 
 async def _demo_poll(backend: Backend, duration: int) -> None:
     """Placeholder polling loop (until real Modbus TCP server integration)."""
@@ -24,11 +27,26 @@ async def _demo_poll(backend: Backend, duration: int) -> None:
 
 
 def _add_common_backend_args(ap: argparse.ArgumentParser):
-    ap.add_argument("--mode", choices=["dataset", "live"], default="dataset",
-                    help="Backend mode (live not yet implemented)")
-    ap.add_argument("--dataset", help="Path to dataset JSON (required for dataset mode)")
-    ap.add_argument("--mutate", action="store_true", help="Enable simple value mutation in dataset mode")
-    ap.add_argument("--duration", type=int, default=5, help="Demo runtime in seconds (until server exists)")
+    ap.add_argument(
+        "--mode",
+        choices=["dataset", "live"],
+        default="dataset",
+        help="Backend mode (live not yet implemented)",
+    )
+    ap.add_argument(
+        "--dataset", help="Path to dataset JSON (required for dataset mode)"
+    )
+    ap.add_argument(
+        "--mutate",
+        action="store_true",
+        help="Enable simple value mutation in dataset mode",
+    )
+    ap.add_argument(
+        "--duration",
+        type=int,
+        default=5,
+        help="Demo runtime in seconds (until server exists)",
+    )
 
 
 def _build_backend(args) -> Backend:
@@ -45,7 +63,9 @@ def _build_backend(args) -> Backend:
 
 
 async def main_async(argv=None):
-    parser = argparse.ArgumentParser(prog="growatt-broker", description="Growatt RTU Broker prototype")
+    parser = argparse.ArgumentParser(
+        prog="growatt-broker", description="Growatt RTU Broker prototype"
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # run command
@@ -55,7 +75,9 @@ async def main_async(argv=None):
     # capture command
     ap_cap = sub.add_parser("capture", help="Run backend and capture all ops to JSONL")
     _add_common_backend_args(ap_cap)
-    ap_cap.add_argument("--out", default="session.jsonl", help="Capture JSONL output path")
+    ap_cap.add_argument(
+        "--out", default="session.jsonl", help="Capture JSONL output path"
+    )
 
     args = parser.parse_args(argv)
 
