@@ -16,6 +16,22 @@ dependencies = [
   "pyserial>=3.5",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pre-commit",
+  "ruff",
+  "black",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
 [project.urls]
 Homepage = "https://github.com/yourname/growatt-rtu-broker"
 Issues = "https://github.com/yourname/growatt-rtu-broker/issues"
