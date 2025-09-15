@@ -23,6 +23,10 @@ dev = [
   "ruff",
   "black",
 ]
+test = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+]
 
 [tool.black]
 line-length = 88
@@ -38,12 +42,6 @@ Issues = "https://github.com/yourname/growatt-rtu-broker/issues"
 
 [project.scripts]
 growatt-broker = "growatt_broker.broker:main"
-
-[project.optional-dependencies]
-test = [
-  "pytest>=8.0",
-  "pytest-asyncio>=0.23",
-]
 
 [tool.pytest.ini_options]
 addopts = "-q"

@@ -2,16 +2,17 @@
 
 Man-in-the-middle / simulation backend layer for Growatt inverter Modbus RTU.
 
-Current focus: backend abstraction + dataset + capture. Live serial backend and
-Modbus TCP serving will be integrated next.
+Current focus: providing a safe RS-485 proxy between Growatt hardware and multiple upstream clients while supplying dataset/capture helpers for the simulator project.
 
 ## Features (current snapshot)
 - DatasetBackend: serve static register values from JSON dataset.
 - Optional mutation (slow counter increment) for realism.
 - CaptureBackend: wraps any backend & writes JSONL events per call.
-- CLI subcommands:
-  - `run`     : demo loop polling a few registers (placeholder for server)
-  - `capture` : same, plus JSONL logging of every operation.
+- Production gateway (`growatt_broker/broker.py`) exposing:
+  - Modbus TCP server (MBAP <-> RTU) with pacing and CRC checks.
+  - ShineWiFi serial pass-through.
+  - JSONL wire logging suitable for dataset compaction.
+- Docker image & compose example for running on Home Assistant OS.
 
 ## Installation (editable)
 From parent repo root (after submodule init):
@@ -41,6 +42,16 @@ Enable simple mutation (auto-increment some values):
 ```bash
 growatt-broker run --mode dataset --dataset datasets/min_6000xh_tl.json --mutate
 ```
+Run the production gateway against hardware:
+```bash
+growatt-broker \
+  --inverter /dev/ttyUSB0 \
+  --shine /dev/ttyUSB1 \
+  --baud 9600 --bytes 8E1 \
+  --tcp 0.0.0.0:5020 \
+  --min-period 1.0 --rtimeout 1.5
+```
+See `docker-compose.yml` for the containerised equivalent.
 
 ## Capture file example (JSONL)
 ```json
@@ -49,18 +60,31 @@ growatt-broker run --mode dataset --dataset datasets/min_6000xh_tl.json --mutate
 ```
 
 ## Roadmap
-1. Implement LiveSerialBackend (real RS-485 transact + pacing).
-2. Add Modbus TCP server translating MBAP <-> RTU via selected backend.
-3. Add Shine serial endpoint (optional) pass-through.
-4. Introduce capture compaction script (to dataset JSON) in parent repo.
-5. Add docker image & (optional) Home Assistant add-on wrapper.
-6. Configurable mutation profiles (energy counters, PV curve). 
-7. Unit tests for backend + capture logic.
+1. Refactor the broker script to consume the async backend interface (enables live capture mode via `CaptureBackend`).
+2. Add virtual tty fan-out so multiple Home Assistant integrations can share one RS-485 adapter while using distinct device nodes.
+3. Optional Shine-to-TCP bridge for mixed upstream clients.
+4. Configurable mutation profiles (energy counters, PV curve).
+5. Expand test coverage to include the production gateway.
+
+## Deployment on Home Assistant OS
+
+1. Copy this directory to `/mnt/data/supervisor/homeassistant/growatt-rtu-broker` using the Advanced SSH add-on.
+2. Edit `docker-compose.yml` and set environment variables:
+   - `INV_DEV` - inverter serial path (e.g. `/dev/serial/by-path/...`).
+   - `SHINE_DEV` - Shine dongle path; point to the inverter path to disable Shine pass-through.
+   - Optional: `TCP_BIND`, `MIN_PERIOD`, `RTIMEOUT`, `LOG_PATH`.
+3. Run `docker compose up -d`.
+
+The container binds port `5020` on the host (`network_mode: host`) and logs traffic to `/var/log/growatt_broker.jsonl`. Configure Home Assistant or other clients to use TCP transport against the host IP and port `5020`.
+
+## Upcoming: Virtual serial fan-out
+
+Multiple Growatt integrations inside Home Assistant currently collide when they open the same `/dev/ttyUSB*`. Planned work will create pseudo-terminal devices (e.g. `/run/growatt-broker/inverter1`) that forward frames through the broker's mutex-protected `Downstream`, letting several HA entries share the RS-485 bus while keeping unit IDs distinct and respecting pacing limits.
 
 ## Limitations
-- No live serial implementation yet.
-- No TCP server yet; current demo just exercises backend calls.
-- Error handling & logging minimal (prototype stage).
+- The CLI demo and production gateway still live in separate code paths; a unified async implementation is on the roadmap above.
+- Virtual tty fan-out is not yet implemented; use the TCP server for multiple inverters in the meantime.
+- Error handling & unit coverage are minimal; expect prototype behaviour.
 
 ## Contributing
 Keep broker concerns separate from HA integration code. Small, focused PRs (one feature at a time) encouraged.
