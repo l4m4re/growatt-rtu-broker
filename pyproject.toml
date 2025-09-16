@@ -45,3 +45,6 @@ growatt-broker = "growatt_broker.broker:main"
 
 [tool.pytest.ini_options]
 addopts = "-q"
+
+[tool.setuptools.package-data]
+"growatt_broker.simulator" = ["*.json", "datasets/*.json"]
