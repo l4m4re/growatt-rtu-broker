@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "growatt-rtu-broker"
 version = "0.1.0"
-description = "Man-in-the-middle broker for Growatt RS-485: multiplex ShineWiFi-X and Modbus-TCP to a single RTU master with pacing and logging"
+description = "Modbus Workbench prototype: bridge, sniff, and simulate Modbus RTU/TCP networks (initial focus on Growatt hardware)"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
