@@ -145,14 +145,26 @@ See [`docker-compose.yml`](docker-compose.yml) for the containerised equivalent.
 ## Deployment on Home Assistant OS
 
 1. Copy this directory to `/mnt/data/supervisor/homeassistant/growatt-rtu-broker` using the Advanced SSH add-on.
-2. Edit `docker-compose.yml` and set environment variables:
-   - `INV_DEV` – inverter serial path (e.g. `/dev/serial/by-path/...`).
-   - `SHINE_DEV` – Shine dongle path; point to the inverter path to disable Shine pass-through.
-   - Optional: `TCP_BIND`, `MIN_PERIOD`, `RTIMEOUT`, `LOG_PATH`.
+2. Populate an `.env` file next to `docker-compose.yml` to describe your hardware and network bindings:
+   ```ini
+   INV_DEV=/dev/serial/by-path/<inverter-port>
+   SHINE_DEV=/dev/serial/by-path/<shinewifi-port>
+   BAUD=115200
+   BYTES=8N1
+   TCP_BIND=0.0.0.0:5020      # Home Assistant / primary Modbus TCP
+   TCP_ALT_BIND=0.0.0.0:5021  # Laptop / devcontainer access
+   SNIFF_BIND=0.0.0.0:5700    # Read-only JSONL sniff stream
+   MIN_PERIOD=1.0
+   RTIMEOUT=1.5
+   LOG_PATH=-                 # Disable on-disk logs for production HA
+   ```
 3. Run `docker compose up -d`.
 
-The container binds port `5020` on the host (`network_mode: host`) and logs traffic to `/var/log/growatt_broker.jsonl`. Configure
-Home Assistant or other clients to use TCP transport against the host IP and port `5020`.
+With this configuration the broker speaks 115200 baud, 8N1 on both the inverter and ShineWiFi serial links, serves Modbus TCP
+for Home Assistant on port `5020`, exposes a second TCP listener on `5021` for ad-hoc tools, and mirrors every frame as a JSONL
+stream on port `5700` for remote sniffing. Logs are suppressed on disk (`LOG_PATH=-`) but still available live through the
+sniff stream. All ports are bound on the host IP because the compose file uses `network_mode: host`. See
+[`docs/ha_live_setup.md`](docs/ha_live_setup.md) for a more detailed walk-through.
 
 ## Limitations
 
