@@ -20,41 +20,46 @@ the dongle is unplugged the broker will automatically retry and begin forwarding
 You can discover the device paths from the HA OS shell with:
 
 ```bash
-ls -l /dev/serial/by-path
+ls -l /dev/serial/by-id
 ```
 
-Record the inverter and ShineWiFi entries and place them in the `.env` file described below.
+Record the inverter and ShineWiFi entries (use the full `/dev/serial/by-id/...` paths) for the commands below.
 
-## Compose configuration
+## Deployment on Home Assistant (without Docker Compose)
 
-1. **Choose a persistent directory for the broker repository.**
+From the Advanced SSH & Web Terminal add-on, run `login` first to drop into the HA host shell—`docker` lives there, not inside the add-on container.
 
-  When using the Advanced SSH & Web Terminal add-on, you are inside a Docker container. Only certain directories are mapped to persistent storage and will survive reboots or add-on restarts:
-  - `/config` (recommended for configuration and custom components)
-  - `/share` (recommended for shared scripts, brokers, and data)
-  - `/addons`, `/backups`, `/media`, `/ssl` (other special purposes)
+1. Choose a persistent directory for the broker repository.
 
-  **Do not use `/root` or `/mnt/data/supervisor/homeassistant` inside the SSH add-on for persistent files.**
+   When using the Advanced SSH & Web Terminal add-on, you are inside a Docker container. Only certain directories are mapped to persistent storage and will survive reboots or add-on restarts:
+   - `/config` (recommended for configuration and custom components)
+   - `/share` (recommended for shared scripts, brokers, and data)
+   - `/addons`, `/backups`, `/media`, `/ssl` (other special purposes)
 
-  For example, to clone the broker persistently:
+   Do not use `/root` or `/mnt/data/supervisor/homeassistant` inside the SSH add-on for persistent files.
 
-  ```bash
-  cd /share
-  # Or: cd /config
-  git clone https://github.com/your-org-or-user/growatt-rtu-broker growatt-rtu-broker
-  ```
+   For example, to clone the broker persistently:
 
-  The broker path will then be `/share/growatt-rtu-broker` (or `/config/growatt-rtu-broker`).
+   ```bash
+   cd /share
+   # Or: cd /config
+   git clone https://github.com/l4m4re/growatt-rtu-broker.git growatt-rtu-broker
+   ```
 
-  For more details, see: https://community.home-assistant.io/t/user-file-changes-lost-on-reboot/545757/2
-2. Create an `.env` file in that directory with the following content (replace the serial device paths with the values from your
-   system):
+   The broker path will then be `/share/growatt-rtu-broker` (or `/config/growatt-rtu-broker`).
+
+2. Copy `.env.example` to `.env` and update the values for your hardware.
+
+   ```bash
+   cd /share/growatt-rtu-broker
+   cp .env.example .env
+   ```
+
+   Edit `.env` with your preferred editor (`nano .env`, `vi .env`, etc.) and set at least the device paths recorded earlier:
 
    ```ini
-   INV_DEV=/dev/serial/by-path/pci-0000:01:00.0-usb-0:1:1.0-port0
-   SHINE_DEV=/dev/serial/by-path/pci-0000:01:00.0-usb-0:2:1.0-port0
-   BAUD=115200
-   BYTES=8N1
+   INV_DEV=/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+   SHINE_DEV=/dev/serial/by-id/usb-04e2_1410-if00-port0
    TCP_BIND=0.0.0.0:5020
    TCP_ALT_BIND=0.0.0.0:5021
    SNIFF_BIND=0.0.0.0:5700
@@ -63,18 +68,80 @@ Record the inverter and ShineWiFi entries and place them in the `.env` file desc
    LOG_PATH=-
    ```
 
-   * `TCP_BIND` feeds the production Home Assistant instance.
-   * `TCP_ALT_BIND` is reserved for your laptop or devcontainer tooling.
-   * `SNIFF_BIND` exposes a JSON Lines feed of every RTU request/response pair.
-   * `LOG_PATH=-` disables on-disk logging to protect the HA SSD; use the sniff feed instead when you need live visibility.
+   Optional overrides from `.env.example` allow you to tweak baud settings per leg; leave them commented unless you have a reason to change the defaults.
 
-3. Launch the container from the same directory:
+3. Build the image once so the local image exists:
 
    ```bash
-   docker compose up -d
+   cd /share/growatt-rtu-broker
+   docker build -t growatt-rtu-broker:local .
    ```
 
-The compose file runs in host networking mode, so the TCP ports above are reachable directly on the HA IP address.
+   Build notes:
+   - You may see: `DEPRECATED: The legacy builder is deprecated... Install the buildx component...`.
+     This warning can be ignored on HA OS; the image will still build and tag successfully.
+   - On success you should see: `Successfully tagged growatt-rtu-broker:local`.
+
+
+4. Start the container with your `.env` values.
+
+   If you copied `.env.example` to `.env` and adjusted the values, you can reuse those settings when starting the container without Docker Compose.
+
+   1. Load the variables into your current shell:
+
+      ```bash
+      set -a; . /share/growatt-rtu-broker/.env; set +a
+      # If you cloned under /config, use that path instead
+      # set -a; . /config/growatt-rtu-broker/.env; set +a
+      ```
+
+   2. Start the container, using the locally built image:
+
+      ```bash
+      docker run -d \
+        --name growatt-broker \
+        --restart unless-stopped \
+        --device="$INV_DEV":/dev/inverter:rw \
+        --device="$SHINE_DEV":/dev/shine:rw \
+        -p "${TCP_BIND##*:}":"${TCP_BIND##*:}" -p "${TCP_ALT_BIND##*:}":"${TCP_ALT_BIND##*:}" -p "${SNIFF_BIND##*:}":"${SNIFF_BIND##*:}" \
+        growatt-rtu-broker:local \
+        growatt-broker --inverter /dev/inverter --shine /dev/shine \
+          --baud "${INV_BAUD:-${BAUD:-115200}}" --bytes "${INV_BYTES:-${BYTES:-8N1}}" \
+          --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
+          --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" --log "${LOG_PATH:--}"
+      ```
+
+   Notes:
+   - `INV_DEV` and `SHINE_DEV` come from `.env` and must be valid host device paths (check with `ls -l "$INV_DEV" "$SHINE_DEV"`).
+   - We source `.env` in the host shell so variables can be used for both host options (like `--device` and `-p`) and for the broker CLI flags.
+   - If a container named `growatt-broker` already exists: `docker stop growatt-broker && docker rm growatt-broker`.
+   - View logs: `docker logs -f growatt-broker`.
+
+
+5. Verify and operate.
+
+   - View logs:
+     ```bash
+     docker logs -f growatt-broker
+     ```
+   - Stop/remove:
+     ```bash
+     docker stop growatt-broker && docker rm growatt-broker
+     ```
+   - Update to latest source (Option A):
+     ```bash
+     cd /share/growatt-rtu-broker && git pull
+     docker restart growatt-broker
+     ```
+   - Rebuild after changes (Option B):
+     ```bash
+     cd /share/growatt-rtu-broker
+     docker build -t growatt-rtu-broker:local .
+     docker stop growatt-broker && docker rm growatt-broker
+     # re-run the docker run command from above
+     ```
+
+
 
 ## Using the ports
 
@@ -84,20 +151,18 @@ The compose file runs in host networking mode, so the TCP ports above are reacha
 | Laptop / dev tools         | 5021 | Use Modbus clients such as `mbpoll`, `pymodbus`, or a second HA instance. |
 | Real-time sniffing (JSONL) | 5700 | Consume with `nc <ha-ip> 5700` or `socat - TCP:<ha-ip>:5700`. |
 
-The sniff stream yields newline-delimited JSON events with timestamps, request metadata, and CRC status. Example:
-
-```json
-{"ts":"2024-04-05T09:30:12.401","role":"REQ","from_client":"TCP:192.168.1.50:55032","uid":1,"func":4,"len":4,"addr":0,"count":2,"crc_ok":true,"hex":"01040000000271cb"}
-{"ts":"2024-04-05T09:30:12.536","role":"RSP","to_client":"TCP:192.168.1.50:55032","uid":1,"func":4,"len":5,"crc_ok":true,"hex":"01040400000000d0f3"}
-```
+The ports above are published directly on the HA host IP.
 
 ## Operational notes
 
 * The ShineWiFi thread automatically retries if the dongle is unplugged and announces the state transitions on the sniff stream.
 * All Modbus masters (HA, ShineWiFi, laptop) share a single downstream connection to the inverter. Transactions are serialized
   with `--min-period 1.0` to match the inverter timing requirements.
-* Because logs are disabled, use the sniff stream for incident response. You can run `nc -k <ha-ip> 5700` on your laptop to keep
-  a rolling view of live traffic.
+* Because on-disk logs are disabled (`--log -`), use `docker logs -f growatt-broker` or the sniff stream for incident response.
 
-Stop the container with `docker compose down` when maintenance is required. Update the `.env` file and rerun `docker compose up
--d` if device paths change.
+---
+
+Troubleshooting tips:
+- If the `docker` command is not found inside the Advanced SSH add-on, ensure you typed `login` to drop to the host shell.
+- If your serial devices are not found, confirm the by-id paths and that no other container is holding the device.
+- If ports appear in use, check for existing containers bound to 5020/5021/5700 and stop them.

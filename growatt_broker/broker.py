@@ -7,6 +7,7 @@ Growatt RTU Broker
     * Modbus-TCP server for HA/tools
  - Enforces min request spacing, logs wire traffic
 """
+
 from __future__ import annotations
 import argparse, socket, threading, time, json, datetime, os
 from typing import Iterable, Optional, List
@@ -24,13 +25,13 @@ def modbus_crc(data: bytes) -> int:
 
 def add_crc(body: bytes) -> bytes:
     c = modbus_crc(body)
-    return body + c.to_bytes(2, 'little')
+    return body + c.to_bytes(2, "little")
 
 
 def crc_ok(frame: bytes) -> bool:
     if len(frame) < 4:
         return False
-    return modbus_crc(frame[:-2]) == int.from_bytes(frame[-2:], 'little')
+    return modbus_crc(frame[:-2]) == int.from_bytes(frame[-2:], "little")
 
 
 class RTUFramer:
@@ -128,25 +129,47 @@ class WireLogger(EventSink):
     def __init__(self, path: str | None):
         self.path = path
         self._lock = threading.Lock()
-        if self.path and self.path not in {"-", "", "none", "NONE"}:
+        # Determine logging mode: 'file', 'console', or 'disabled'
+        if path is None or path == "" or path == "-":
+            self._mode = "console"
+        elif isinstance(path, str) and path.lower() == "none":
+            self._mode = "disabled"
+        else:
+            self._mode = "file"
             try:
                 d = os.path.dirname(self.path) or "."
                 os.makedirs(d, exist_ok=True)
                 with open(self.path, "a", encoding="utf-8"):
                     pass
             except Exception:
-                pass
+                # Fall back to console if file cannot be prepared
+                self._mode = "console"
 
     def enabled(self) -> bool:
-        return bool(self.path) and self.path not in {"-", "", "none", "NONE"}
+        return self._mode != "disabled"
 
     def handle(self, event: dict) -> None:
         if not self.enabled():
             return
         line = json.dumps(event, ensure_ascii=False)
+        if self._mode == "console":
+            with self._lock:
+                try:
+                    print(line, flush=True)
+                except Exception:
+                    pass
+            return
+        # file mode
         with self._lock:
-            with open(self.path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            try:
+                with open(self.path, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except Exception:
+                # As a last resort, try console
+                try:
+                    print(line, flush=True)
+                except Exception:
+                    pass
 
 
 class SnifferRelay(EventSink, threading.Thread):
@@ -202,11 +225,19 @@ class Downstream:
         rtimeout: float = 1.5,
         events: Optional[EventHub] = None,
     ):
-        databits = int(fmt[0]); parity = fmt[1].upper(); stop = int(fmt[2])
-        py_par = {'N': serial.PARITY_NONE, 'E': serial.PARITY_EVEN, 'O': serial.PARITY_ODD}[parity]
+        databits = int(fmt[0])
+        parity = fmt[1].upper()
+        stop = int(fmt[2])
+        py_par = {
+            "N": serial.PARITY_NONE,
+            "E": serial.PARITY_EVEN,
+            "O": serial.PARITY_ODD,
+        }[parity]
         py_stp = {1: serial.STOPBITS_ONE, 2: serial.STOPBITS_TWO}[stop]
-        self.ser = serial.Serial(dev, baud, bytesize=databits, parity=py_par, stopbits=py_stp, timeout=0)
-        bits_per_char = 1 + databits + stop + (0 if parity == 'N' else 1)
+        self.ser = serial.Serial(
+            dev, baud, bytesize=databits, parity=py_par, stopbits=py_stp, timeout=0
+        )
+        bits_per_char = 1 + databits + stop + (0 if parity == "N" else 1)
         self.char_time = bits_per_char / baud
         self.framer = RTUFramer(self.ser, self.char_time)
         self.lock = threading.Lock()
@@ -226,12 +257,33 @@ class Downstream:
             self._enforce_spacing()
             _ = self.ser.read(self.ser.in_waiting or 0)
             if self.events:
-                self.events.emit(role="REQ", from_client=client, crc_ok=crc_ok(req), hex=req.hex(), **parse_rtu(req))
-            self.ser.write(req); self.ser.flush()
+                self.events.emit(
+                    role="REQ",
+                    from_client=client,
+                    crc_ok=crc_ok(req),
+                    hex=req.hex(),
+                    **parse_rtu(req),
+                )
+            self.ser.write(req)
+            self.ser.flush()
             resp = self.framer.read_frame(timeout=self.rtimeout)
             self._last_done = time.perf_counter()
+            if not resp and self.events:
+                self.events.emit(
+                    event="downstream_timeout",
+                    role="WARN",
+                    to="INVERTER",
+                    from_client=client,
+                    timeout=self.rtimeout,
+                )
             if self.events:
-                self.events.emit(role="RSP", to_client=client, crc_ok=crc_ok(resp), hex=(resp.hex() if resp else ""), **parse_rtu(resp or b""))
+                self.events.emit(
+                    role="RSP",
+                    to_client=client,
+                    crc_ok=crc_ok(resp),
+                    hex=(resp.hex() if resp else ""),
+                    **parse_rtu(resp or b""),
+                )
             return resp
 
 
@@ -255,15 +307,34 @@ class ShineEndpoint(threading.Thread):
         self._online = False
 
     def _open_port(self) -> None:
-        databits = int(self.fmt[0]); parity = self.fmt[1].upper(); stop = int(self.fmt[2])
-        py_par = {'N': serial.PARITY_NONE, 'E': serial.PARITY_EVEN, 'O': serial.PARITY_ODD}[parity]
+        databits = int(self.fmt[0])
+        parity = self.fmt[1].upper()
+        stop = int(self.fmt[2])
+        py_par = {
+            "N": serial.PARITY_NONE,
+            "E": serial.PARITY_EVEN,
+            "O": serial.PARITY_ODD,
+        }[parity]
         py_stp = {1: serial.STOPBITS_ONE, 2: serial.STOPBITS_TWO}[stop]
-        self.ser = serial.Serial(self.dev, self.baud, bytesize=databits, parity=py_par, stopbits=py_stp, timeout=0)
-        bits_per_char = 1 + databits + stop + (0 if parity == 'N' else 1)
+        self.ser = serial.Serial(
+            self.dev,
+            self.baud,
+            bytesize=databits,
+            parity=py_par,
+            stopbits=py_stp,
+            timeout=0,
+        )
+        bits_per_char = 1 + databits + stop + (0 if parity == "N" else 1)
         self.framer = RTUFramer(self.ser, bits_per_char / self.baud)
         self._online = True
         if self.events:
-            self.events.emit(event="shine_online", role="SYS", port=self.dev, baud=self.baud, fmt=self.fmt)
+            self.events.emit(
+                event="shine_online",
+                role="SYS",
+                port=self.dev,
+                baud=self.baud,
+                fmt=self.fmt,
+            )
 
     def _close_port(self) -> None:
         if self.ser:
@@ -284,7 +355,12 @@ class ShineEndpoint(threading.Thread):
                     self._open_port()
                 except Exception as exc:
                     if self.events:
-                        self.events.emit(event="shine_open_failed", role="WARN", port=self.dev, error=str(exc))
+                        self.events.emit(
+                            event="shine_open_failed",
+                            role="WARN",
+                            port=self.dev,
+                            error=str(exc),
+                        )
                     time.sleep(5.0)
                     continue
             try:
@@ -293,19 +369,43 @@ class ShineEndpoint(threading.Thread):
                     continue
                 if len(req) < 4 or not crc_ok(req):
                     if self.events:
-                        self.events.emit(role="DROP", from_client="SHINE", reason="bad_crc", hex=req.hex())
+                        self.events.emit(
+                            role="DROP",
+                            from_client="SHINE",
+                            reason="bad_crc",
+                            hex=req.hex(),
+                        )
                     continue
                 resp = self.ds.transact(req, client="SHINE")
                 if resp:
-                    self.ser.write(resp); self.ser.flush()
+                    self.ser.write(resp)
+                    self.ser.flush()
+                else:
+                    if self.events:
+                        self.events.emit(
+                            event="downstream_timeout",
+                            role="WARN",
+                            to="INVERTER",
+                            from_client="SHINE",
+                        )
             except (serial.SerialException, OSError) as exc:
                 if self.events:
-                    self.events.emit(event="shine_serial_error", role="WARN", port=self.dev, error=str(exc))
+                    self.events.emit(
+                        event="shine_serial_error",
+                        role="WARN",
+                        port=self.dev,
+                        error=str(exc),
+                    )
                 self._close_port()
                 time.sleep(2.0)
             except Exception as exc:
                 if self.events:
-                    self.events.emit(event="shine_unhandled_error", role="ERROR", port=self.dev, error=str(exc))
+                    self.events.emit(
+                        event="shine_unhandled_error",
+                        role="ERROR",
+                        port=self.dev,
+                        error=str(exc),
+                    )
                 self._close_port()
                 time.sleep(2.0)
 
@@ -333,7 +433,10 @@ class TCPServer(threading.Thread):
                 hdr = self._recv_exact(conn, 7)
                 if not hdr:
                     break
-                tid = hdr[0:2]; pid = hdr[2:4]; length = int.from_bytes(hdr[4:6], 'big'); uid = hdr[6]
+                tid = hdr[0:2]
+                pid = hdr[2:4]
+                length = int.from_bytes(hdr[4:6], "big")
+                uid = hdr[6]
                 pdu = self._recv_exact(conn, length - 1)
                 if not pdu:
                     break
@@ -341,9 +444,10 @@ class TCPServer(threading.Thread):
                 rtu_resp = self.ds.transact(rtu_req, client=peer)
                 if not rtu_resp or len(rtu_resp) < 4 or not crc_ok(rtu_resp):
                     break
-                uid2 = rtu_resp[0]; pdu2 = rtu_resp[1:-2]
+                uid2 = rtu_resp[0]
+                pdu2 = rtu_resp[1:-2]
                 rsp_len = len(pdu2) + 1
-                mbap = tid + pid + rsp_len.to_bytes(2, 'big') + bytes([uid2])
+                mbap = tid + pid + rsp_len.to_bytes(2, "big") + bytes([uid2])
                 conn.sendall(mbap + pdu2)
         except Exception:
             pass
@@ -365,15 +469,25 @@ class TCPServer(threading.Thread):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Growatt broker: Shine serial + Modbus-TCP -> single RTU master")
-    ap.add_argument("--inverter", required=True, help="Downstream RS-485 serial device (to inverter)")
+    ap = argparse.ArgumentParser(
+        description="Growatt broker: Shine serial + Modbus-TCP -> single RTU master"
+    )
+    ap.add_argument(
+        "--inverter",
+        required=True,
+        help="Downstream RS-485 serial device (to inverter)",
+    )
     ap.add_argument("--shine", required=True, help="Upstream ShineWiFi-X serial device")
     ap.add_argument("--inv-baud", type=int, help="Inverter baudrate")
     ap.add_argument("--inv-bytes", default=None, help="Inverter format, e.g. 8E1")
     ap.add_argument("--shine-baud", type=int, help="Shine baudrate")
     ap.add_argument("--shine-bytes", default=None, help="Shine format, e.g. 8E1")
-    ap.add_argument("--baud", type=int, default=9600, help="Default baud if side-specific not set")
-    ap.add_argument("--bytes", default="8E1", help="Default serial format if side-specific not set")
+    ap.add_argument(
+        "--baud", type=int, default=9600, help="Default baud if side-specific not set"
+    )
+    ap.add_argument(
+        "--bytes", default="8E1", help="Default serial format if side-specific not set"
+    )
     ap.add_argument(
         "--tcp",
         default="0.0.0.0:5020",
@@ -389,8 +503,12 @@ def main():
         default=None,
         help="Optional host:port for streaming JSONL sniff feed (use '-' to disable)",
     )
-    ap.add_argument("--min-period", type=float, default=1.0, help="Min seconds between transactions")
-    ap.add_argument("--rtimeout", type=float, default=1.5, help="RTU read timeout seconds")
+    ap.add_argument(
+        "--min-period", type=float, default=1.0, help="Min seconds between transactions"
+    )
+    ap.add_argument(
+        "--rtimeout", type=float, default=1.5, help="RTU read timeout seconds"
+    )
     ap.add_argument(
         "--log",
         default="/var/log/growatt_broker.jsonl",
