@@ -97,7 +97,12 @@ From the Advanced SSH & Web Terminal add-on, run `login` first to drop into the 
 
    2. Start the container, using the locally built image:
 
+      You can start the container directly (this will fail if one of the `--device` paths
+      does not exist), or use the included helper which omits missing devices so the
+      broker can be started before the Shine dongle is plugged in.
+
       ```bash
+      # Direct run (will fail if devices are missing)
       docker run -d \
         --name growatt-broker \
         --restart unless-stopped \
@@ -109,6 +114,17 @@ From the Advanced SSH & Web Terminal add-on, run `login` first to drop into the 
           --baud "${INV_BAUD:-${BAUD:-115200}}" --bytes "${INV_BYTES:-${BYTES:-8N1}}" \
           --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
           --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" --log "${LOG_PATH:--}"
+      ```
+
+      ```bash
+      # Use the helper; it will source /share/growatt-rtu-broker/.env and skip missing devices
+  /share/growatt-rtu-broker/docker/run_broker.sh
+
+  Note: if the helper detects a missing device path it will start the container in a
+  hot-plug mode by adding `--privileged` and bind-mounting `/dev` into the container.
+  This allows the broker to see devices that are plugged in after the container starts.
+  Starting in privileged mode grants broad device access; prefer explicit `--device`
+  flags when all devices are present.
       ```
 
    Notes:
@@ -159,6 +175,9 @@ The ports above are published directly on the HA host IP.
 * All Modbus masters (HA, ShineWiFi, laptop) share a single downstream connection to the inverter. Transactions are serialized
   with `--min-period 1.0` to match the inverter timing requirements.
 * Because on-disk logs are disabled (`--log -`), use `docker logs -f growatt-broker` or the sniff stream for incident response.
+* If you expect to plug the Shine dongle in after the container starts, use `docker/run_broker.sh` which will
+  start the container without binding the missing device; when the dongle is plugged in the broker will detect
+  it and begin forwarding traffic.
 
 ---
 

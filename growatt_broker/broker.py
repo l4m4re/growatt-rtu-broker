@@ -335,6 +335,7 @@ class ShineEndpoint(threading.Thread):
                 baud=self.baud,
                 fmt=self.fmt,
             )
+        # Logging is handled via EventHub/WireLogger; no direct stdout prints here
 
     def _close_port(self) -> None:
         if self.ser:
@@ -347,6 +348,7 @@ class ShineEndpoint(threading.Thread):
         if self._online and self.events:
             self.events.emit(event="shine_offline", role="SYS", port=self.dev)
         self._online = False
+        # Logging is handled via EventHub/WireLogger; no direct stdout prints here
 
     def run(self):
         while True:
@@ -477,7 +479,12 @@ def main():
         required=True,
         help="Downstream RS-485 serial device (to inverter)",
     )
-    ap.add_argument("--shine", required=True, help="Upstream ShineWiFi-X serial device")
+    ap.add_argument(
+        "--shine",
+        required=False,
+        default=None,
+        help="Optional upstream ShineWiFi-X serial device (omit if not present)",
+    )
     ap.add_argument("--inv-baud", type=int, help="Inverter baudrate")
     ap.add_argument("--inv-bytes", default=None, help="Inverter format, e.g. 8E1")
     ap.add_argument("--shine-baud", type=int, help="Shine baudrate")
@@ -547,8 +554,10 @@ def main():
         rtimeout=args.rtimeout,
         events=events,
     )
-    shine = ShineEndpoint(args.shine, sh_baud, sh_bytes, ds, events=events)
-    shine.start()
+    shine = None
+    if args.shine:
+        shine = ShineEndpoint(args.shine, sh_baud, sh_bytes, ds, events=events)
+        shine.start()
 
     tcp_specs = []
     if args.tcp and args.tcp not in {"", "-"}:
