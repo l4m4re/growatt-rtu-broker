@@ -55,14 +55,51 @@ class RTUFramer:
                 self.last = now
             else:
                 if self.buf and (now - self.last) >= self.gap:
-                    frame = bytes(self.buf)
-                    self.buf.clear()
-                    return frame
+                    # Attempt to find a CRC-terminated frame inside the buffer.
+                    # This handles combined frames (frame1+frame2) by returning
+                    # the first valid frame and leaving the remainder in the buffer.
+                    if len(self.buf) >= 4:
+                        # Search for a valid frame anywhere in the buffer (handles
+                        # possible mis-alignment if we started reading mid-frame).
+                        buf = bytes(self.buf)
+                        for start_idx in range(0, len(buf) - 3):
+                            # minimal frame length is 4 bytes
+                            for end_idx in range(start_idx + 4, len(buf) + 1):
+                                if crc_ok(buf[start_idx:end_idx]):
+                                    # Extract the first valid frame
+                                    frame = buf[start_idx:end_idx]
+                                    # Remove consumed bytes (including any prefix garbage)
+                                    remaining = buf[end_idx:]
+                                    self.buf.clear()
+                                    if remaining:
+                                        self.buf.extend(remaining)
+                                    return frame
+                        # No valid CRC-terminated frame found; fallthrough to
+                        # timeout handling below (do not return partial data yet)
+                    else:
+                        # Buffer too small to contain a full frame, fallthrough
+                        pass
                 if (now - start) > timeout:
-                    if self.buf:
-                        frame = bytes(self.buf)
+                    # On timeout: if we have a CRC-terminated frame in the buffer,
+                    # return it. Otherwise, do not return a partial frame (return
+                    # empty to indicate timeout) — this prevents higher layers from
+                    # processing incomplete frames which would fail CRC checks.
+                    if len(self.buf) >= 4:
+                        buf = bytes(self.buf)
+                        for start_idx in range(0, len(buf) - 3):
+                            for end_idx in range(start_idx + 4, len(buf) + 1):
+                                if crc_ok(buf[start_idx:end_idx]):
+                                    frame = buf[start_idx:end_idx]
+                                    remaining = buf[end_idx:]
+                                    self.buf.clear()
+                                    if remaining:
+                                        self.buf.extend(remaining)
+                                    return frame
+                    # Protect against runaway buffer growth: if buffer gets very
+                    # large and no valid frame is detected, drop it and return
+                    # timeout to avoid memory issues.
+                    if len(self.buf) > 8192:
                         self.buf.clear()
-                        return frame
                     return b""
                 # Don’t try to sleep sub-millisecond; use a small fixed sleep to reduce CPU
                 time.sleep(max(0.001, self.char_time * 0.5))
