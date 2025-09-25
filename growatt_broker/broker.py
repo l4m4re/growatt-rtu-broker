@@ -51,7 +51,12 @@ class RTUFramer:
             n = self.ser.in_waiting
             now = time.perf_counter()
             if n:
-                self.buf.extend(self.ser.read(n))
+                # Defensive: cap single-read growth to avoid runaway memory
+                # usage if in_waiting reports a huge value (driver / USB blip).
+                cap = min(n, 4096)
+                chunk = self.ser.read(cap)
+                if chunk:
+                    self.buf.extend(chunk)
                 self.last = now
             else:
                 if self.buf and (now - self.last) >= self.gap:
@@ -292,7 +297,22 @@ class Downstream:
     def transact(self, req: bytes, *, client: str = "UNKNOWN") -> bytes:
         with self.lock:
             self._enforce_spacing()
+            # Drain OS input buffer and clear any accumulated bytes in the
+            # framer's internal buffer. If we don't clear the framer buffer
+            # a previously received unsolicited frame can be returned as the
+            # response to this new request, causing mis-attribution and
+            # CRC/timeout confusion.
             _ = self.ser.read(self.ser.in_waiting or 0)
+            try:
+                self.framer.buf.clear()
+                # reset last read timestamp to now so gap heuristics don't
+                # treat immediately following bytes as coming before the
+                # request was sent
+                self.framer.last = time.perf_counter()
+            except Exception:
+                # be defensive: if clearing fails, continue — we prefer to
+                # attempt the transaction than raise here
+                pass
             if self.events:
                 self.events.emit(
                     role="REQ",
