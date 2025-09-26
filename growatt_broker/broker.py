@@ -40,7 +40,7 @@ class RTUFramer:
         self.char_time = char_time
         # At high baud on Linux, user-space gaps between recv bursts can be > a few ms.
         # Use 3.5 char times but never below a safe floor to avoid premature frame cuts.
-        gap_floor = 0.020  # 20ms floor
+        gap_floor = 0.002  # 2 ms floor
         self.gap = max(gap_chars * char_time, gap_floor)
         self.buf = bytearray()
         self.last = time.perf_counter()
@@ -51,12 +51,7 @@ class RTUFramer:
             n = self.ser.in_waiting
             now = time.perf_counter()
             if n:
-                # Defensive: cap single-read growth to avoid runaway memory
-                # usage if in_waiting reports a huge value (driver / USB blip).
-                cap = min(n, 4096)
-                chunk = self.ser.read(cap)
-                if chunk:
-                    self.buf.extend(chunk)
+                self.buf.extend(self.ser.read(n))
                 self.last = now
             else:
                 if self.buf and (now - self.last) >= self.gap:
