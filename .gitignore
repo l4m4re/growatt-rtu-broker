@@ -5,7 +5,3 @@ dist/
 build/
 *.egg-info/
 .DS_Store
-
-# Large raw live captures stay local; derived analyses and sample sets are tracked.
-/broker-210925.log
-/broker-260925-2.log
