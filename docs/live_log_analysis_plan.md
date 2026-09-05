@@ -34,7 +34,7 @@
   - Provide filters (time window, source, function) to focus analysis.
   - Write unit coverage around the parser to lock in the log format.
 - **Phase 2 (analysis outputs)**
-  - Extend the tool to compare against simulator register definitions (`holding_*.json`, `input_*.json`).
+  - Extend the tool to compare against device register definitions (`holding_*.json`, `input_*.json`).
   - Emit reports listing registers missing from definitions or values outside expected ranges.
   - Add optional export of replay datasets for the simulator.
 - **Phase 3 (integration backports)**

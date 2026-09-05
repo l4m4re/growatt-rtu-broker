@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -136,6 +137,40 @@ class ClientStats:
 KNOWN_FUNCS = {0x03, 0x04, 0x06, 0x10}
 
 
+def is_tcp_client(label: Optional[str]) -> bool:
+    if not label:
+        return False
+    return label.startswith("TCP:")
+
+
+@dataclass
+class FuncSummary:
+    req_count: int = 0
+    rsp_count: int = 0
+    first_ts: Optional[datetime] = None
+    last_ts: Optional[datetime] = None
+    samples: List[str] = None
+
+    def __post_init__(self) -> None:
+        if self.samples is None:
+            self.samples = []
+
+    def add(self, role: str, ev: Event, *, limit: int = 5) -> None:
+        if role == "REQ":
+            self.req_count += 1
+        elif role == "RSP":
+            self.rsp_count += 1
+        if self.first_ts is None or ev.ts < self.first_ts:
+            self.first_ts = ev.ts
+        if self.last_ts is None or ev.ts > self.last_ts:
+            self.last_ts = ev.ts
+        if len(self.samples) < limit:
+            uid = ev.uid if ev.uid is not None else "-"
+            self.samples.append(
+                f"{ev.ts} {role} uid={uid} len={ev.total_len} hex={ev.hex[:80]}"
+            )
+
+
 def is_suspect_large(ev: Event, threshold: int = 256) -> bool:
     return ev.total_len >= threshold
 
@@ -228,73 +263,127 @@ def analyze(
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
     limit_lines: Optional[int] = None,
+    include_tcp: bool = False,
 ) -> None:
     stats: Dict[str, ClientStats] = {}
     suspects: List[str] = []
+    func_summaries: Dict[int, FuncSummary] = defaultdict(FuncSummary)
+    pending_unusual: Dict[tuple[int, Optional[int]], deque[Event]] = defaultdict(deque)
+    matched_unusual: List[tuple[Event, Event]] = []
+    orphan_responses: List[Event] = []
+    write_stats: Dict[int, Dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "last_ts": None, "values": []}
+    )
+    # Chronological list of (event, description) for all interesting events
+    interesting_events: List[tuple[Event, str]] = []
 
     def get_stats(name: str) -> ClientStats:
         if name not in stats:
             stats[name] = ClientStats()
         return stats[name]
 
+    # Track last timeout event per client to avoid duplicate reporting
+    last_timeout_ts: Dict[str, datetime] = {}
+
     for ev in read_events(paths, since=since, until=until, limit_lines=limit_lines):
         # Determine client label for accounting
         client = ev.client_from or ev.client_to or "(unknown)"
-        if client_filter and client != client_filter:
+
+        if client_filter and client_filter not in client:
             continue
+
+        is_tcp = is_tcp_client(ev.client_from) or is_tcp_client(ev.client_to)
+        if is_tcp and not include_tcp and not (client_filter and client_filter in client):
+            continue
+
         cs = get_stats(client)
 
-        # Role accounting
         if ev.role == "REQ":
             cs.req += 1
             cs.last_req_ts = ev.ts
             # Heuristics: uncommon function or very large frame
             if ev.func is not None and ev.func not in KNOWN_FUNCS:
                 cs.unknown_func += 1
-                suspects.append(
-                    f"{ev.ts} {client} REQ unknown func={ev.func} len={ev.total_len}"
-                )
+                func_summaries[ev.func].add("REQ", ev)
+                pending_unusual[(ev.func, ev.uid)].append(ev)
             if is_suspect_large(ev):
                 cs.large_frames += 1
-                suspects.append(
-                    f"{ev.ts} {client} REQ large frame {ev.total_len}B func={ev.func}"
-                )
+                desc = f"{ev.ts} {client} REQ large frame {ev.total_len}B func={ev.func}"
+                suspects.append(desc)
+                interesting_events.append((ev, desc))
+            if ev.func == 0x06:
+                try:
+                    data = bytes.fromhex(ev.hex)
+                    if len(data) >= 6:
+                        reg = int.from_bytes(data[2:4], "big")
+                        val = int.from_bytes(data[4:6], "big")
+                        ws = write_stats[reg]
+                        ws["count"] += 1
+                        ws["last_ts"] = ev.ts
+                        if reg != 188 and len(ws["values"]) < 5:
+                            ws["values"].append((ev.ts, val))
+                except Exception:
+                    pass
         elif ev.role == "RSP":
             cs.rsp += 1
             # Bad CRC on a response
             if ev.crc_ok is False:
                 cs.crc_bad += 1
-                suspects.append(f"{ev.ts} {client} RSP bad CRC len={ev.total_len}")
+                desc = f"{ev.ts} {client} RSP bad CRC len={ev.total_len}"
+                suspects.append(desc)
+                interesting_events.append((ev, desc))
             if is_suspect_large(ev):
                 cs.large_frames += 1
-                suspects.append(
-                    f"{ev.ts} {client} RSP large frame {ev.total_len}B func={ev.func}"
-                )
+                desc = f"{ev.ts} {client} RSP large frame {ev.total_len}B func={ev.func}"
+                suspects.append(desc)
+                interesting_events.append((ev, desc))
             if detect_combined and ev.total_len >= combined_threshold:
                 try:
                     data = bytes.fromhex(ev.hex)
                     sub = scan_combined_frames(data, stop_after=2)
                     if sub > 1:
-                        suspects.append(
-                            f"{ev.ts} {client} RSP contains {sub} valid subframes (possible mis-framing)"
+                        desc = (
+                            f"{ev.ts} {client} RSP contains {sub} valid subframes "
+                            "(possible mis-framing)"
                         )
+                        suspects.append(desc)
+                        interesting_events.append((ev, desc))
                 except Exception:
                     pass
+            if ev.func is not None and ev.func not in KNOWN_FUNCS:
+                cs.unknown_func += 1
+                func_summaries[ev.func].add("RSP", ev)
+                key = (ev.func, ev.uid)
+                queue = pending_unusual.get(key)
+                if queue:
+                    req_ev = queue.popleft()
+                    matched_unusual.append((req_ev, ev))
+                else:
+                    orphan_responses.append(ev)
+
         # Event accounting
         if ev.event == "downstream_timeout":
-            cs.timeouts += 1
-            cs.timeout_streak += 1
-            suspects.append(f"{ev.ts} {client} TIMEOUT ({ev.raw.get('timeout')})")
+            # Only report a timeout if it's not a duplicate for this client at this timestamp
+            last_ts = last_timeout_ts.get(client)
+            if last_ts is None or abs((ev.ts - last_ts).total_seconds()) > 0.0001:
+                cs.timeouts += 1
+                cs.timeout_streak += 1
+                desc = f"{ev.ts} {client} TIMEOUT ({ev.raw.get('timeout')})"
+                suspects.append(desc)
+                interesting_events.append((ev, desc))
+                last_timeout_ts[client] = ev.ts
         else:
             cs.timeout_streak = 0
         if ev.role == "DROP":
             cs.drops += 1
-            suspects.append(
-                f"{ev.ts} {client} DROP reason={ev.raw.get('reason')} len={ev.total_len}"
-            )
+            desc = f"{ev.ts} {client} DROP reason={ev.raw.get('reason')} len={ev.total_len}"
+            suspects.append(desc)
+            interesting_events.append((ev, desc))
         if ev.event in {"shine_serial_error", "shine_open_failed"}:
             cs.serial_errors += 1
-            suspects.append(f"{ev.ts} {client} {ev.event} error={ev.raw.get('error')}")
+            desc = f"{ev.ts} {client} {ev.event} error={ev.raw.get('error')}"
+            suspects.append(desc)
+            interesting_events.append((ev, desc))
 
     # Output summary
     print("=== Summary by client ===")
@@ -309,6 +398,76 @@ def analyze(
     print("=== Suspect events ===")
     for line in suspects[:500]:
         print(line)
+    print()
+
+    # Chronological interesting events with time-delta bar
+    print("=== Chronological interesting events ===")
+    prev_ts = None
+    for ev, desc in sorted(interesting_events, key=lambda x: x[0].ts):
+        if prev_ts is not None:
+            dt = (ev.ts - prev_ts).total_seconds()
+            # Bar: 1 '#' per 0.5s, capped at 40 chars
+            n = min(40, int(dt / 0.5))
+            bar = '#' * n
+            print(f"{bar} {dt:.3f}s")
+        print(desc)
+        prev_ts = ev.ts
+    print()
+
+    # Non-standard functions
+    if func_summaries:
+        print("=== Non-standard Modbus function codes ===")
+        for func, summary in sorted(func_summaries.items()):
+            print(
+                f"func={func:3d} req={summary.req_count:4d} rsp={summary.rsp_count:4d} "
+                f"first={summary.first_ts} last={summary.last_ts}"
+            )
+            for sample in summary.samples[:5]:
+                print(f"    {sample}")
+        print()
+
+    # Matched/unmatched unusual requests
+    pending_list = [ev for queue in pending_unusual.values() for ev in queue]
+    if matched_unusual:
+        print("=== Sample unusual REQ/RSP pairs ===")
+        for req_ev, rsp_ev in matched_unusual[:10]:
+            uid = req_ev.uid if req_ev.uid is not None else "-"
+            print(
+                f"REQ {req_ev.ts} func={req_ev.func} uid={uid} len={req_ev.total_len} hex={req_ev.hex[:80]}"
+            )
+            print(
+                f"  RSP {rsp_ev.ts} len={rsp_ev.total_len} hex={rsp_ev.hex[:80]}"
+            )
+        print()
+    if pending_list:
+        print("=== Unmatched unusual requests (no response seen) ===")
+        for ev in pending_list[:10]:
+            uid = ev.uid if ev.uid is not None else "-"
+            print(
+                f"{ev.ts} func={ev.func} uid={uid} len={ev.total_len} hex={ev.hex[:80]}"
+            )
+        print()
+    if orphan_responses:
+        print("=== Orphan unusual responses (no matching request) ===")
+        for ev in orphan_responses[:10]:
+            uid = ev.uid if ev.uid is not None else "-"
+            print(
+                f"{ev.ts} func={ev.func} uid={uid} len={ev.total_len} hex={ev.hex[:80]}"
+            )
+        print()
+
+    # Function 6 write summary (excluding watchdog register 188)
+    if write_stats:
+        print("=== Function 6 register writes (address != 188) ===")
+        for reg, info in sorted(write_stats.items()):
+            if reg == 188:
+                continue
+            print(
+                f"register {reg:5d}: writes={info['count']:4d} last={info['last_ts']}"
+            )
+            for ts, val in info["values"][:5]:
+                print(f"    {ts} value={val}")
+        print()
 
 
 def _parse_optional_ts(s: Optional[str]) -> Optional[datetime]:
@@ -349,6 +508,11 @@ def main() -> None:
         type=int,
         help="Stop after reading N matching lines (for quick scans)",
     )
+    ap.add_argument(
+        "--include-tcp",
+        action="store_true",
+        help="Include TCP clients (Home Assistant) in analysis",
+    )
     args = ap.parse_args()
 
     paths = args.paths if args.paths else ["-"]
@@ -360,6 +524,7 @@ def main() -> None:
         since=_parse_optional_ts(args.since),
         until=_parse_optional_ts(args.until),
         limit_lines=args.limit_lines,
+        include_tcp=args.include_tcp,
     )
 
 

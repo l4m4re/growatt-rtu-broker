@@ -54,6 +54,31 @@ implementation.
 
 ## Implementation phases
 
+### Immediate execution plan – live broker first
+**Priority:** get the existing broker back onto the live Home Assistant Raspberry Pi so Growatt battery control can be developed against the real inverter before changing the deployment architecture.
+
+**Initial operating mode**
+- Deploy the current Docker broker manually on the live HA system, even though Home Assistant may warn about an unmanaged container.
+- Connect production Home Assistant and the HA-core development container to the broker over the LAN Modbus-TCP endpoint.
+- Start with ShineWiFi disabled if that reduces operational risk, but keep Shine passthrough and sniffing as supported, optional functionality.
+- Record the exact inverter serial settings, TCP ports, unit ID, Docker command, and rollback procedure.
+
+**Battery-first milestone**
+- Make Growatt battery telemetry reliable: state of charge, battery charge/discharge power, PV power, household load, and grid import/export.
+- Identify and safely validate the writable registers needed for tariff-based charging, discharging, power limits, SoC limits, and any time-of-use controls.
+- Implement the first dynamic-tariff control loop with explicit reserve-SoC, efficiency, export, and failure safeguards.
+- Keep the broker stable and observable while the HA integration and control logic evolve independently.
+
+**ShineWiFi follow-up**
+- Re-enable Shine passthrough when needed so the Shine app remains usable in parallel with HA.
+- Capture and analyse undocumented or unusual Shine frames through the broker's JSONL logging/sniff stream.
+- Treat framing, timing, CRC, unsolicited frames, and unknown function codes as first-class compatibility cases.
+
+**Later architecture migration**
+- After the live battery workflow is stable, migrate the broker functionality to a native Home Assistant implementation.
+- Decide at that point whether the final form should be a native HA integration, a Supervisor-managed add-on, or a split where the broker remains a managed service and HA owns the device entities.
+- Preserve the LAN development workflow and Shine observability during the migration.
+
 ### Phase 0 – Prototype foundation (stabilise current code)
 **Objectives**
 - Preserve existing behaviours while documentation and tests are refreshed.
