@@ -34,6 +34,55 @@ def crc_ok(frame: bytes) -> bool:
     return modbus_crc(frame[:-2]) == int.from_bytes(frame[-2:], "little")
 
 
+def standard_response_spec(request: bytes) -> tuple[int, int, int] | None:
+    """Return unit, function, and normal response length for standard requests."""
+    if len(request) < 8 or not crc_ok(request):
+        return None
+
+    unit, function = request[:2]
+    if function in (0x03, 0x04):
+        if len(request) != 8:
+            return None
+        count = int.from_bytes(request[4:6], "big")
+        return unit, function, 5 + (count * 2)
+    if function in (0x06, 0x10):
+        return unit, function, 8
+    return None
+
+
+def find_standard_response(buffer: bytes, request: bytes) -> bytes | None:
+    """Find one complete response matching a standard Modbus request.
+
+    Response length is derived from the request.  This deliberately does not
+    accept an arbitrary CRC-valid substring, because a partial FC03/FC04 frame
+    can itself contain a valid CRC.
+    """
+    spec = standard_response_spec(request)
+    if spec is None:
+        return None
+
+    unit, function, normal_length = spec
+    for start in range(len(buffer)):
+        if buffer[start] != unit:
+            continue
+        if start + 5 <= len(buffer):
+            candidate = buffer[start : start + 5]
+            if (
+                candidate[1] == (function | 0x80)
+                and crc_ok(candidate)
+            ):
+                return candidate
+        if start + normal_length > len(buffer):
+            continue
+        candidate = buffer[start : start + normal_length]
+        if candidate[1] != function or not crc_ok(candidate):
+            continue
+        if function in (0x03, 0x04) and candidate[2] != (normal_length - 5):
+            continue
+        return candidate
+    return None
+
+
 class RTUFramer:
     def __init__(self, ser: serial.Serial, char_time: float, gap_chars: float = 3.5):
         self.ser = ser
@@ -103,6 +152,26 @@ class RTUFramer:
                     return b""
                 # Don’t try to sleep sub-millisecond; use a small fixed sleep to reduce CPU
                 time.sleep(max(0.001, self.char_time * 0.5))
+
+    def read_standard_frame(self, request: bytes, timeout: float = 3.0) -> bytes:
+        """Read an exact-length response for a standard Modbus request."""
+        if standard_response_spec(request) is None:
+            return self.read_frame(timeout=timeout)
+
+        start = time.perf_counter()
+        while True:
+            n = self.ser.in_waiting
+            if n:
+                self.buf.extend(self.ser.read(n))
+                response = find_standard_response(bytes(self.buf), request)
+                if response is not None:
+                    end = self.buf.find(response) + len(response)
+                    del self.buf[:end]
+                    return response
+
+            if time.perf_counter() - start > timeout:
+                return b""
+            time.sleep(max(0.001, self.char_time * 0.5))
 
 
 def now_iso() -> str:
@@ -289,7 +358,13 @@ class Downstream:
         if wait > 0:
             time.sleep(wait)
 
-    def transact(self, req: bytes, *, client: str = "UNKNOWN") -> bytes:
+    def transact(
+        self,
+        req: bytes,
+        *,
+        client: str = "UNKNOWN",
+        standard_modbus: bool = False,
+    ) -> bytes:
         with self.lock:
             self._enforce_spacing()
             # Drain OS input buffer and clear any accumulated bytes in the
@@ -318,7 +393,10 @@ class Downstream:
                 )
             self.ser.write(req)
             self.ser.flush()
-            resp = self.framer.read_frame(timeout=self.rtimeout)
+            if standard_modbus:
+                resp = self.framer.read_standard_frame(req, timeout=self.rtimeout)
+            else:
+                resp = self.framer.read_frame(timeout=self.rtimeout)
             self._last_done = time.perf_counter()
             if not resp and self.events:
                 self.events.emit(
@@ -495,7 +573,9 @@ class TCPServer(threading.Thread):
                 if not pdu:
                     break
                 rtu_req = add_crc(bytes([uid]) + pdu)
-                rtu_resp = self.ds.transact(rtu_req, client=peer)
+                rtu_resp = self.ds.transact(
+                    rtu_req, client=peer, standard_modbus=True
+                )
                 if not rtu_resp or len(rtu_resp) < 4 or not crc_ok(rtu_resp):
                     break
                 uid2 = rtu_resp[0]
