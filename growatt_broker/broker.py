@@ -50,6 +50,14 @@ def standard_response_spec(request: bytes) -> tuple[int, int, int] | None:
     return None
 
 
+def is_retryable_standard_read(request: bytes) -> bool:
+    """Return whether a standard TCP request can be safely retried."""
+    return (
+        standard_response_spec(request) is not None
+        and request[1] in (0x03, 0x04)
+    )
+
+
 def find_standard_response(buffer: bytes, request: bytes) -> bytes | None:
     """Find one complete response matching a standard Modbus request.
 
@@ -366,38 +374,51 @@ class Downstream:
         standard_modbus: bool = False,
     ) -> bytes:
         with self.lock:
-            self._enforce_spacing()
-            # Drain OS input buffer and clear any accumulated bytes in the
-            # framer's internal buffer. If we don't clear the framer buffer
-            # a previously received unsolicited frame can be returned as the
-            # response to this new request, causing mis-attribution and
-            # CRC/timeout confusion.
-            _ = self.ser.read(self.ser.in_waiting or 0)
-            try:
-                self.framer.buf.clear()
-                # reset last read timestamp to now so gap heuristics don't
-                # treat immediately following bytes as coming before the
-                # request was sent
-                self.framer.last = time.perf_counter()
-            except Exception:
-                # be defensive: if clearing fails, continue — we prefer to
-                # attempt the transaction than raise here
-                pass
-            if self.events:
-                self.events.emit(
-                    role="REQ",
-                    from_client=client,
-                    crc_ok=crc_ok(req),
-                    hex=req.hex(),
-                    **parse_rtu(req),
-                )
-            self.ser.write(req)
-            self.ser.flush()
-            if standard_modbus:
-                resp = self.framer.read_standard_frame(req, timeout=self.rtimeout)
-            else:
-                resp = self.framer.read_frame(timeout=self.rtimeout)
-            self._last_done = time.perf_counter()
+            resp = b""
+            attempts = 2 if standard_modbus and is_retryable_standard_read(req) else 1
+            for attempt in range(attempts):
+                self._enforce_spacing()
+                # Drain OS input buffer and clear any accumulated bytes in the
+                # framer's internal buffer. If we don't clear the framer buffer
+                # a previously received unsolicited frame can be returned as the
+                # response to this new request, causing mis-attribution and
+                # CRC/timeout confusion.
+                _ = self.ser.read(self.ser.in_waiting or 0)
+                try:
+                    self.framer.buf.clear()
+                    # reset last read timestamp to now so gap heuristics don't
+                    # treat immediately following bytes as coming before the
+                    # request was sent
+                    self.framer.last = time.perf_counter()
+                except Exception:
+                    # be defensive: if clearing fails, continue — we prefer to
+                    # attempt the transaction than raise here
+                    pass
+                if self.events:
+                    self.events.emit(
+                        role="REQ",
+                        from_client=client,
+                        crc_ok=crc_ok(req),
+                        hex=req.hex(),
+                        **parse_rtu(req),
+                    )
+                self.ser.write(req)
+                self.ser.flush()
+                if standard_modbus:
+                    resp = self.framer.read_standard_frame(req, timeout=self.rtimeout)
+                else:
+                    resp = self.framer.read_frame(timeout=self.rtimeout)
+                self._last_done = time.perf_counter()
+                if resp or attempt + 1 == attempts:
+                    break
+                if self.events:
+                    self.events.emit(
+                        event="downstream_retry",
+                        role="WARN",
+                        to="INVERTER",
+                        from_client=client,
+                        attempt=attempt + 2,
+                    )
             if not resp and self.events:
                 self.events.emit(
                     event="downstream_timeout",
