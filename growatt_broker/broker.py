@@ -9,8 +9,17 @@ Growatt RTU Broker
 """
 
 from __future__ import annotations
-import argparse, socket, threading, time, json, datetime, os
-from typing import Iterable, Optional, List
+import argparse
+import atexit
+import datetime
+import json
+import os
+import signal
+import socket
+import threading
+import time
+from pathlib import Path
+from typing import Callable, Iterable, Optional, List
 import serial
 
 
@@ -91,10 +100,118 @@ def find_standard_response(buffer: bytes, request: bytes) -> bytes | None:
     return None
 
 
+class ForensicCapture:
+    """Bounded raw serial capture for an explicitly enabled forensic run."""
+
+    def __init__(
+        self,
+        path: str | None,
+        *,
+        max_bytes: int = 10_000_000,
+        max_seconds: float | None = None,
+    ):
+        self.path = Path(path) if path else None
+        self.max_bytes = max(0, max_bytes)
+        self.max_seconds = max_seconds if max_seconds and max_seconds > 0 else None
+        self.started_mono = time.monotonic()
+        self._captured_bytes = 0
+        self._closed = False
+        self._lock = threading.Lock()
+        self._file = None
+        if self.path:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = self.path.open("w", encoding="utf-8", buffering=1)
+            atexit.register(self.close)
+
+    @property
+    def enabled(self) -> bool:
+        return self._file is not None and not self._closed
+
+    def _write(self, event: dict) -> None:
+        if self._file is None or self._closed:
+            return
+        self._file.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+    def record_rx(
+        self,
+        data: bytes,
+        *,
+        source: str,
+        captured_bytes: bool = True,
+    ) -> None:
+        if not data or not self.enabled:
+            return
+        with self._lock:
+            if (
+                self.max_seconds
+                and time.monotonic() - self.started_mono > self.max_seconds
+            ):
+                return
+            payload = data
+            truncated = False
+            if captured_bytes:
+                remaining = self.max_bytes - self._captured_bytes
+                if remaining <= 0:
+                    return
+                if len(payload) > remaining:
+                    payload = payload[:remaining]
+                    truncated = True
+                self._captured_bytes += len(payload)
+            self._write(
+                {
+                    "event": "physical_rx_raw",
+                    "source": source,
+                    "kind": "serial_read" if captured_bytes else "buffer_snapshot",
+                    "captured_bytes": captured_bytes,
+                    "truncated": truncated,
+                    "length": len(data),
+                    "captured_length": len(payload),
+                    "hex": payload.hex(),
+                    "ts": now_iso(),
+                    "monotonic_ns": time.monotonic_ns(),
+                }
+            )
+
+    def record_tx(self, data: bytes, *, client: str, attempt: int) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            if (
+                self.max_seconds
+                and time.monotonic() - self.started_mono > self.max_seconds
+            ):
+                return
+            self._write(
+                {
+                    "event": "physical_tx",
+                    "client": client,
+                    "attempt": attempt,
+                    "length": len(data),
+                    "hex": data.hex(),
+                    "ts": now_iso(),
+                    "monotonic_ns": time.monotonic_ns(),
+                }
+            )
+
+    def close(self) -> None:
+        with self._lock:
+            if self._file is not None and not self._closed:
+                self._file.flush()
+                self._file.close()
+                self._closed = True
+
+
 class RTUFramer:
-    def __init__(self, ser: serial.Serial, char_time: float, gap_chars: float = 3.5):
+    def __init__(
+        self,
+        ser: serial.Serial,
+        char_time: float,
+        gap_chars: float = 3.5,
+        capture: Callable[[bytes, str], None] | None = None,
+    ):
         self.ser = ser
         self.char_time = char_time
+        self.capture = capture
         # At high baud on Linux, user-space gaps between recv bursts can be > a few ms.
         # Use 3.5 char times but never below a safe floor to avoid premature frame cuts.
         gap_floor = 0.002  # 2 ms floor
@@ -102,14 +219,25 @@ class RTUFramer:
         self.buf = bytearray()
         self.last = time.perf_counter()
 
+    def _read_available(self, source: str) -> None:
+        count = self.ser.in_waiting
+        if not count:
+            return
+        data = self.ser.read(count)
+        if data:
+            self.buf.extend(data)
+            self.last = time.perf_counter()
+            if self.capture:
+                self.capture(data, source)
+
     def read_frame(self, timeout: float = 3.0) -> bytes:
         start = time.perf_counter()
         while True:
             n = self.ser.in_waiting
             now = time.perf_counter()
             if n:
-                self.buf.extend(self.ser.read(n))
-                self.last = now
+                self._read_available("normal_read")
+                now = time.perf_counter()
             else:
                 if self.buf and (now - self.last) >= self.gap:
                     # Attempt to find a CRC-terminated frame inside the buffer.
@@ -156,6 +284,8 @@ class RTUFramer:
                     # large and no valid frame is detected, drop it and return
                     # timeout to avoid memory issues.
                     if len(self.buf) > 8192:
+                        if self.capture:
+                            self.capture(bytes(self.buf), "buffer_overflow_discard")
                         self.buf.clear()
                     return b""
                 # Don’t try to sleep sub-millisecond; use a small fixed sleep to reduce CPU
@@ -168,9 +298,8 @@ class RTUFramer:
 
         start = time.perf_counter()
         while True:
-            n = self.ser.in_waiting
-            if n:
-                self.buf.extend(self.ser.read(n))
+            if self.ser.in_waiting:
+                self._read_available("normal_read")
                 response = find_standard_response(bytes(self.buf), request)
                 if response is not None:
                     end = self.buf.find(response) + len(response)
@@ -338,6 +467,7 @@ class Downstream:
         min_cmd_period: float = 1.0,
         rtimeout: float = 1.5,
         events: Optional[EventHub] = None,
+        forensic: ForensicCapture | None = None,
     ):
         databits = int(fmt[0])
         parity = fmt[1].upper()
@@ -353,12 +483,37 @@ class Downstream:
         )
         bits_per_char = 1 + databits + stop + (0 if parity == "N" else 1)
         self.char_time = bits_per_char / baud
-        self.framer = RTUFramer(self.ser, self.char_time)
+        self.forensic = forensic
+        self.framer = RTUFramer(
+            self.ser,
+            self.char_time,
+            capture=(self._capture_rx if forensic else None),
+        )
         self.lock = threading.Lock()
         self.min_cmd_period = float(min_cmd_period)
         self.rtimeout = float(rtimeout)
         self._last_done = 0.0
         self.events = events
+
+    def _capture_rx(self, data: bytes, source: str) -> None:
+        if self.forensic:
+            self.forensic.record_rx(data, source=source)
+
+    def _snapshot_buffer(self, source: str) -> None:
+        if self.forensic and self.framer.buf:
+            self.forensic.record_rx(
+                bytes(self.framer.buf), source=source, captured_bytes=False
+            )
+
+    def final_drain(self) -> None:
+        """Record bytes already available without transmitting anything."""
+        with self.lock:
+            self._snapshot_buffer("post_test_framer_buffer")
+            count = self.ser.in_waiting
+            if count:
+                data = self.ser.read(count)
+                if data:
+                    self._capture_rx(data, "post_test_drain")
 
     def _enforce_spacing(self):
         now = time.perf_counter()
@@ -383,7 +538,10 @@ class Downstream:
                 # a previously received unsolicited frame can be returned as the
                 # response to this new request, causing mis-attribution and
                 # CRC/timeout confusion.
-                _ = self.ser.read(self.ser.in_waiting or 0)
+                self._snapshot_buffer("pre_request_framer_buffer")
+                drained = self.ser.read(self.ser.in_waiting or 0)
+                if drained:
+                    self._capture_rx(drained, "pre_request_drain")
                 try:
                     self.framer.buf.clear()
                     # reset last read timestamp to now so gap heuristics don't
@@ -398,16 +556,23 @@ class Downstream:
                     self.events.emit(
                         role="REQ",
                         from_client=client,
+                        monotonic_ns=time.monotonic_ns(),
                         crc_ok=crc_ok(req),
                         hex=req.hex(),
                         **parse_rtu(req),
                     )
                 self.ser.write(req)
                 self.ser.flush()
+                if self.forensic:
+                    self.forensic.record_tx(req, client=client, attempt=attempt + 1)
                 if standard_modbus:
                     resp = self.framer.read_standard_frame(req, timeout=self.rtimeout)
                 else:
                     resp = self.framer.read_frame(timeout=self.rtimeout)
+                if not resp:
+                    self._snapshot_buffer("timeout_residual")
+                else:
+                    self._snapshot_buffer("leftover_framer_buffer")
                 self._last_done = time.perf_counter()
                 if resp or attempt + 1 == attempts:
                     break
@@ -431,6 +596,7 @@ class Downstream:
                 self.events.emit(
                     role="RSP",
                     to_client=client,
+                    monotonic_ns=time.monotonic_ns(),
                     crc_ok=crc_ok(resp),
                     hex=(resp.hex() if resp else ""),
                     **parse_rtu(resp or b""),
@@ -591,7 +757,11 @@ class TCPServer(threading.Thread):
     def handle(self, conn: socket.socket):
         response_cache: dict[bytes, tuple[float, bytes]] = {}
         try:
-            peer = f"TCP:{conn.getpeername()[0]}:{conn.getpeername()[1]}"
+            peer_info = conn.getpeername()
+            if isinstance(peer_info, tuple) and len(peer_info) >= 2:
+                peer = f"TCP:{peer_info[0]}:{peer_info[1]}"
+            else:
+                peer = "TCP:LOCAL"
             conn.settimeout(3.0)
             while True:
                 hdr = self._recv_exact(conn, 7)
@@ -611,17 +781,15 @@ class TCPServer(threading.Thread):
                         del response_cache[key]
                 cached = response_cache.get(cache_key)
                 if cached is not None:
-                    _, response = cached
                     if self.events:
                         self.events.emit(
-                            event="tcp_duplicate_replay",
+                            event="tcp_duplicate_suppressed",
                             role="INFO",
                             from_client=peer,
                             transaction_id=int.from_bytes(tid, "big"),
                             unit=uid,
                             func=pdu[0] if pdu else None,
                         )
-                    conn.sendall(response)
                     continue
                 rtu_req = add_crc(bytes([uid]) + pdu)
                 rtu_resp = self.ds.transact(
@@ -712,6 +880,23 @@ def main():
         default="/var/log/growatt_broker.jsonl",
         help="JSONL log path (use '-' to disable)",
     )
+    ap.add_argument(
+        "--forensic-rx-log",
+        default=None,
+        help="Bounded inverter RX/TX forensic JSONL path (disabled by default)",
+    )
+    ap.add_argument(
+        "--forensic-rx-max-bytes",
+        type=int,
+        default=10_000_000,
+        help="Maximum raw RX bytes retained by forensic capture",
+    )
+    ap.add_argument(
+        "--forensic-rx-max-seconds",
+        type=float,
+        default=None,
+        help="Optional maximum forensic capture duration",
+    )
     args = ap.parse_args()
 
     inv_baud = args.inv_baud or args.baud
@@ -736,6 +921,19 @@ def main():
         sniff_desc = f"{sniff_host}:{sniff_port}"
 
     events = EventHub(sinks)
+    forensic = ForensicCapture(
+        args.forensic_rx_log,
+        max_bytes=args.forensic_rx_max_bytes,
+        max_seconds=args.forensic_rx_max_seconds,
+    )
+    if forensic.enabled:
+        events.emit(
+            event="forensic_rx_enabled",
+            role="SYS",
+            path=str(forensic.path),
+            max_bytes=forensic.max_bytes,
+            max_seconds=forensic.max_seconds,
+        )
 
     ds = Downstream(
         args.inverter,
@@ -744,6 +942,7 @@ def main():
         min_cmd_period=args.min_period,
         rtimeout=args.rtimeout,
         events=events,
+        forensic=forensic,
     )
     shine = None
     if args.shine:
@@ -782,10 +981,24 @@ def main():
         parts.append(f"LOG={file_logger.path}")
     else:
         parts.append("LOG=disabled")
+    if forensic.enabled:
+        parts.append(f"FORENSIC_RX={forensic.path}")
     print("Broker up. " + "  ".join(parts))
 
+    final_drain_requested = threading.Event()
+
+    def request_final_drain(_signum, _frame) -> None:
+        final_drain_requested.set()
+
+    if forensic.enabled and hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, request_final_drain)
+
     while True:
-        time.sleep(3600)
+        if final_drain_requested.is_set():
+            final_drain_requested.clear()
+            ds.final_drain()
+            events.emit(event="forensic_rx_final_drain", role="SYS")
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
