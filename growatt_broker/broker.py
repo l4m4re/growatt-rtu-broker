@@ -564,10 +564,20 @@ class ShineEndpoint(threading.Thread):
 
 
 class TCPServer(threading.Thread):
-    def __init__(self, bind_host: str, bind_port: int, downstream: Downstream):
+    _RESPONSE_CACHE_TTL = 10.0
+    _RESPONSE_CACHE_MAX = 32
+
+    def __init__(
+        self,
+        bind_host: str,
+        bind_port: int,
+        downstream: Downstream,
+        events: EventHub | None = None,
+    ):
         super().__init__(daemon=True)
         self.addr = (bind_host, bind_port)
         self.ds = downstream
+        self.events = events
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(self.addr)
@@ -579,6 +589,7 @@ class TCPServer(threading.Thread):
             threading.Thread(target=self.handle, args=(conn,), daemon=True).start()
 
     def handle(self, conn: socket.socket):
+        response_cache: dict[bytes, tuple[float, bytes]] = {}
         try:
             peer = f"TCP:{conn.getpeername()[0]}:{conn.getpeername()[1]}"
             conn.settimeout(3.0)
@@ -593,6 +604,25 @@ class TCPServer(threading.Thread):
                 pdu = self._recv_exact(conn, length - 1)
                 if not pdu:
                     break
+                cache_key = tid + pid + bytes([uid]) + pdu
+                now = time.monotonic()
+                for key, (expires, _) in list(response_cache.items()):
+                    if expires <= now:
+                        del response_cache[key]
+                cached = response_cache.get(cache_key)
+                if cached is not None:
+                    _, response = cached
+                    if self.events:
+                        self.events.emit(
+                            event="tcp_duplicate_replay",
+                            role="INFO",
+                            from_client=peer,
+                            transaction_id=int.from_bytes(tid, "big"),
+                            unit=uid,
+                            func=pdu[0] if pdu else None,
+                        )
+                    conn.sendall(response)
+                    continue
                 rtu_req = add_crc(bytes([uid]) + pdu)
                 rtu_resp = self.ds.transact(
                     rtu_req, client=peer, standard_modbus=True
@@ -603,7 +633,15 @@ class TCPServer(threading.Thread):
                 pdu2 = rtu_resp[1:-2]
                 rsp_len = len(pdu2) + 1
                 mbap = tid + pid + rsp_len.to_bytes(2, "big") + bytes([uid2])
-                conn.sendall(mbap + pdu2)
+                response = mbap + pdu2
+                conn.sendall(response)
+                if len(response_cache) >= self._RESPONSE_CACHE_MAX:
+                    oldest = min(response_cache, key=lambda key: response_cache[key][0])
+                    del response_cache[oldest]
+                response_cache[cache_key] = (
+                    time.monotonic() + self._RESPONSE_CACHE_TTL,
+                    response,
+                )
         except Exception:
             pass
         finally:
@@ -725,7 +763,7 @@ def main():
             host, port = parse_host_port(spec)
         except ValueError as exc:
             ap.error(str(exc))
-        server = TCPServer(host, port, ds)
+        server = TCPServer(host, port, ds, events=events)
         server.start()
         servers.append(server)
         tcp_desc.append(f"{host}:{port}")
