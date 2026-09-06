@@ -173,34 +173,42 @@ def analyze(path: Path) -> dict[str, Any]:
     records = [
         json.loads(line) for line in path.read_text().splitlines() if line.strip()
     ]
-    transactions = [tx for record in records if (tx := _parse_tx(record)) is not None]
+    transactions = [
+        tx
+        for record in records
+        if record.get("event") == "physical_tx"
+        and (tx := _parse_tx(record)) is not None
+    ]
     seen_transactions: list[Tx] = []
     candidates: list[Candidate] = []
     unknown_bytes = 0
     captured_bytes = 0
 
-    for record in records:
-        if record.get("event") == "physical_tx":
-            transaction = _parse_tx(record)
-            if transaction is not None:
-                seen_transactions.append(transaction)
-            continue
-        if record.get("event") != "physical_rx_raw":
-            continue
-        if record.get("kind") != "serial_read" or not record.get("captured_bytes"):
-            continue
-        try:
-            data = bytes.fromhex(record.get("hex", ""))
-        except ValueError:
-            unknown_bytes += int(record.get("captured_length", 0))
-            continue
-        captured_bytes += len(data)
+    rx_group: list[dict[str, Any]] = []
+
+    def classify_group(group: list[dict[str, Any]]) -> None:
+        nonlocal unknown_bytes, captured_bytes
+        if not group:
+            return
+        chunks: list[bytes] = []
+        for record in group:
+            try:
+                data = bytes.fromhex(record.get("hex", ""))
+            except ValueError:
+                unknown_bytes += int(record.get("captured_length", 0))
+                continue
+            chunks.append(data)
+            captured_bytes += len(data)
+        if not chunks:
+            return
+        data = b"".join(chunks)
         extracted, unknown = _extract_known(data)
         unknown_bytes += unknown
+        first = group[0]
         for _offset, raw, function, structure in extracted:
             candidate = Candidate(
-                ts=record.get("ts", ""),
-                source=record.get("source", ""),
+                ts=first.get("ts", ""),
+                source=first.get("source", ""),
                 raw=raw,
                 function=function,
                 crc_valid=True,
@@ -217,6 +225,22 @@ def analyze(path: Path) -> dict[str, Any]:
             else:
                 candidate.category = "UNSOLICITED_VALID_CRC_FRAME"
             candidates.append(candidate)
+
+    for record in records:
+        if record.get("event") == "physical_tx":
+            classify_group(rx_group)
+            rx_group = []
+            transaction = _parse_tx(record)
+            if transaction is not None:
+                seen_transactions.append(transaction)
+            continue
+        if (
+            record.get("event") == "physical_rx_raw"
+            and record.get("kind") == "serial_read"
+            and record.get("captured_bytes")
+        ):
+            rx_group.append(record)
+    classify_group(rx_group)
 
     by_function: dict[str, dict[str, Any]] = {}
     counts: Counter[str] = Counter()
