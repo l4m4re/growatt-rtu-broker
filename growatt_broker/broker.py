@@ -892,6 +892,10 @@ class ShineEndpoint(threading.Thread):
                     disposition == "forwarded"
                     and standard_response_spec(req) is not None
                 )
+                if self.policy == "transparent":
+                    # The dongle owns this serial leg; preserve the inverter's
+                    # raw response shape instead of applying TCP unit matching.
+                    standard_request = False
 
                 if self.forensic:
                     self.forensic.record_shine(
