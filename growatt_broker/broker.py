@@ -14,6 +14,7 @@ import atexit
 import datetime
 import json
 import os
+import select
 import signal
 import socket
 import threading
@@ -790,6 +791,216 @@ class Downstream:
         return resp
 
 
+class RawSerialBridge(threading.Thread):
+    """Forward every byte between Shine and inverter without protocol logic."""
+
+    def __init__(
+        self,
+        inverter_dev: str,
+        shine_dev: str,
+        inverter_baud: int,
+        shine_baud: int,
+        inverter_fmt: str,
+        shine_fmt: str,
+        *,
+        events: EventHub | None = None,
+        forensic: ForensicCapture | None = None,
+    ):
+        super().__init__(daemon=True, name="growatt-raw-shine-bridge")
+        self.inverter_dev = inverter_dev
+        self.shine_dev = shine_dev
+        self.inverter_baud = inverter_baud
+        self.shine_baud = shine_baud
+        self.inverter_fmt = inverter_fmt
+        self.shine_fmt = shine_fmt
+        self.events = events
+        self.forensic = forensic
+        self._shine: serial.Serial | None = None
+        self._inverter: serial.Serial | None = None
+        self._next_shine_open = 0.0
+        self._next_inverter_open = 0.0
+
+    @staticmethod
+    def _open(dev: str, baud: int, fmt: str) -> serial.Serial:
+        databits = int(fmt[0])
+        parity = fmt[1].upper()
+        stop = int(fmt[2])
+        py_par = {
+            "N": serial.PARITY_NONE,
+            "E": serial.PARITY_EVEN,
+            "O": serial.PARITY_ODD,
+        }[parity]
+        py_stp = {1: serial.STOPBITS_ONE, 2: serial.STOPBITS_TWO}[stop]
+        return serial.Serial(
+            dev,
+            baud,
+            bytesize=databits,
+            parity=py_par,
+            stopbits=py_stp,
+            timeout=0,
+        )
+
+    def _emit_online(self, side: str, dev: str, baud: int, fmt: str) -> None:
+        if self.events:
+            self.events.emit(
+                event=f"{side}_online",
+                role="SYS",
+                port=dev,
+                baud=baud,
+                fmt=fmt,
+            )
+
+    def _close_side(self, side: str) -> None:
+        attr = "_shine" if side == "shine" else "_inverter"
+        port = getattr(self, attr)
+        if port is not None:
+            try:
+                port.close()
+            except Exception:
+                pass
+        setattr(self, attr, None)
+        if self.events:
+            self.events.emit(
+                event=f"{side}_offline",
+                role="SYS",
+                port=self.shine_dev if side == "shine" else self.inverter_dev,
+            )
+
+    def _record_wire(self, data: bytes, direction: str, disposition: str) -> None:
+        if self.forensic:
+            self.forensic.record_shine(
+                data,
+                direction=direction,
+                disposition=disposition,
+                event="shine_wire_raw",
+            )
+        if self.events:
+            self.events.emit(
+                event="shine_wire",
+                role="WIRE",
+                source="SHINE",
+                direction=direction,
+                disposition=disposition,
+                length=len(data),
+                hex=data.hex(),
+            )
+
+    def _forward(
+        self,
+        data: bytes,
+        *,
+        direction: str,
+        target: serial.Serial | None,
+    ) -> None:
+        if target is None:
+            self._record_wire(data, direction, "no_target")
+            return
+        target.write(data)
+        self._record_wire(data, direction, "forwarded")
+
+    def _try_open_shine(self) -> None:
+        now = time.monotonic()
+        if self._shine is not None or now < self._next_shine_open:
+            return
+        try:
+            self._shine = self._open(
+                self.shine_dev, self.shine_baud, self.shine_fmt
+            )
+        except (serial.SerialException, OSError, ValueError) as exc:
+            self._next_shine_open = now + 5.0
+            if self.events:
+                self.events.emit(
+                    event="shine_open_failed",
+                    role="WARN",
+                    port=self.shine_dev,
+                    error=str(exc),
+                )
+            return
+        self._emit_online("shine", self.shine_dev, self.shine_baud, self.shine_fmt)
+
+    def _try_open_inverter(self) -> None:
+        now = time.monotonic()
+        if self._inverter is not None or now < self._next_inverter_open:
+            return
+        try:
+            self._inverter = self._open(
+                self.inverter_dev, self.inverter_baud, self.inverter_fmt
+            )
+        except (serial.SerialException, OSError, ValueError) as exc:
+            self._next_inverter_open = now + 5.0
+            if self.events:
+                self.events.emit(
+                    event="inverter_open_failed",
+                    role="ERROR",
+                    port=self.inverter_dev,
+                    error=str(exc),
+                )
+            return
+        self._emit_online(
+            "inverter", self.inverter_dev, self.inverter_baud, self.inverter_fmt
+        )
+
+    def _read_and_forward(
+        self,
+        source: serial.Serial,
+        target: serial.Serial | None,
+        *,
+        direction: str,
+        source_side: str,
+    ) -> None:
+        try:
+            data = source.read(source.in_waiting or 1)
+            if data:
+                self._forward(data, direction=direction, target=target)
+        except (serial.SerialException, OSError) as exc:
+            if self.events:
+                self.events.emit(
+                    event=f"{source_side}_serial_error",
+                    role="WARN",
+                    port=self.shine_dev
+                    if source_side == "shine"
+                    else self.inverter_dev,
+                    error=str(exc),
+                )
+            self._close_side(source_side)
+
+    def run(self) -> None:
+        while True:
+            self._try_open_inverter()
+            self._try_open_shine()
+            if self._inverter is None:
+                time.sleep(0.1)
+                continue
+
+            readable = [self._inverter]
+            if self._shine is not None:
+                readable.append(self._shine)
+            try:
+                ready, _, _ = select.select(readable, [], [], 0.1)
+            except (OSError, ValueError):
+                if self._shine is not None:
+                    self._close_side("shine")
+                if self._inverter is not None:
+                    self._close_side("inverter")
+                continue
+
+            for source in ready:
+                if source is self._shine:
+                    self._read_and_forward(
+                        source,
+                        self._inverter,
+                        direction="shine_to_inverter",
+                        source_side="shine",
+                    )
+                elif source is self._inverter:
+                    self._read_and_forward(
+                        source,
+                        self._shine,
+                        direction="inverter_to_shine",
+                        source_side="inverter",
+                    )
+
+
 class ShineEndpoint(threading.Thread):
     def __init__(
         self,
@@ -1126,9 +1337,9 @@ def main():
     ap.add_argument("--shine-bytes", default=None, help="Shine format, e.g. 8E1")
     ap.add_argument(
         "--shine-policy",
-        choices=("read-only", "transparent"),
+        choices=("read-only", "transparent", "raw-transparent"),
         default="read-only",
-        help="Shine forwarding policy; read-only blocks writes and unknown functions",
+        help="Shine policy; raw-transparent forwards every serial byte",
     )
     ap.add_argument(
         "--baud", type=int, default=9600, help="Default baud if side-specific not set"
@@ -1223,18 +1434,33 @@ def main():
             max_seconds=forensic.max_seconds,
         )
 
-    ds = Downstream(
-        args.inverter,
-        inv_baud,
-        inv_bytes,
-        min_cmd_period=args.min_period,
-        rtimeout=args.rtimeout,
-        events=events,
-        forensic=forensic,
-        shine_burst=args.shine_burst,
-    )
+    ds = None
     shine = None
-    if args.shine:
+    raw_shine = None
+    if args.shine and args.shine_policy == "raw-transparent":
+        raw_shine = RawSerialBridge(
+            args.inverter,
+            args.shine,
+            inv_baud,
+            sh_baud,
+            inv_bytes,
+            sh_bytes,
+            events=events,
+            forensic=forensic,
+        )
+        raw_shine.start()
+    else:
+        ds = Downstream(
+            args.inverter,
+            inv_baud,
+            inv_bytes,
+            min_cmd_period=args.min_period,
+            rtimeout=args.rtimeout,
+            events=events,
+            forensic=forensic,
+            shine_burst=args.shine_burst,
+        )
+    if args.shine and raw_shine is None:
         shine = ShineEndpoint(
             args.shine,
             sh_baud,
@@ -1247,14 +1473,16 @@ def main():
         shine.start()
 
     tcp_specs = []
+    servers = []
     if args.tcp and args.tcp not in {"", "-"}:
         tcp_specs.append(args.tcp)
     if args.tcp_alt and args.tcp_alt not in {"", "-"}:
         tcp_specs.append(args.tcp_alt)
 
-    servers = []
     tcp_desc = []
     for index, spec in enumerate(tcp_specs):
+        if ds is None:
+            ap.error("TCP servers are unavailable in raw-transparent Shine mode")
         try:
             host, port = parse_host_port(spec)
         except ValueError as exc:
@@ -1270,7 +1498,7 @@ def main():
         servers.append(server)
         tcp_desc.append(f"{host}:{port}")
 
-    if not servers:
+    if not servers and raw_shine is None:
         ap.error("at least one TCP server must be configured (set --tcp or --tcp-alt)")
 
     parts = [
@@ -1278,6 +1506,8 @@ def main():
         f"SHINE={args.shine}@{sh_baud}/{sh_bytes}",
         f"TCP={','.join(tcp_desc)}",
     ]
+    if raw_shine is not None:
+        parts.append("SHINE_MODE=raw-transparent")
     if sniff_desc:
         parts.append(f"SNIFF={sniff_desc}")
     if file_logger.enabled():
@@ -1299,7 +1529,8 @@ def main():
     while True:
         if final_drain_requested.is_set():
             final_drain_requested.clear()
-            ds.final_drain()
+            if ds is not None:
+                ds.final_drain()
             events.emit(event="forensic_rx_final_drain", role="SYS")
         time.sleep(0.5)
 
