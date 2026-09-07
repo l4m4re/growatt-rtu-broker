@@ -888,7 +888,10 @@ class ShineEndpoint(threading.Thread):
 
                 function = req[1]
                 disposition = shine_policy_disposition(req, self.policy)
-                standard_read = disposition == "forwarded" and function in (0x03, 0x04)
+                standard_request = (
+                    disposition == "forwarded"
+                    and standard_response_spec(req) is not None
+                )
 
                 if self.forensic:
                     self.forensic.record_shine(
@@ -927,7 +930,7 @@ class ShineEndpoint(threading.Thread):
                         req,
                         client="SHINE",
                         source="SHINE",
-                        standard_modbus=standard_read,
+                        standard_modbus=standard_request,
                     )
                     if self.events:
                         self.events.emit(
