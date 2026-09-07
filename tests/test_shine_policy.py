@@ -17,6 +17,9 @@ def _read(function: int = 0x04) -> bytes:
 def test_read_only_policy_allows_standard_reads_only() -> None:
     assert shine_policy_disposition(_read()) == "forwarded"
     assert shine_policy_disposition(_read(0x03)) == "forwarded"
+    assert shine_policy_disposition(
+        add_crc(bytes.fromhex("0003002b0001"))
+    ) == "blocked_broadcast_read"
     assert shine_policy_disposition(add_crc(bytes.fromhex("010600100001"))) == (
         "blocked_write_single"
     )

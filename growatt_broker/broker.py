@@ -74,6 +74,8 @@ def shine_policy_disposition(request: bytes, policy: str = "read-only") -> str:
     if policy == "transparent":
         return "forwarded"
     if function in (0x03, 0x04) and standard_response_spec(request) is not None:
+        if request[0] == 0:
+            return "blocked_broadcast_read"
         return "forwarded"
     if function == 0x06:
         return "blocked_write_single"
