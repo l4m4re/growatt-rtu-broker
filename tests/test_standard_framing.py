@@ -101,12 +101,28 @@ def test_fc06_response() -> None:
     assert find_standard_response(response, req) == response
 
 
+def test_fc06_same_length_wrong_register_is_rejected() -> None:
+    req = add_crc(bytes.fromhex("010600100001"))
+    response = add_crc(bytes.fromhex("010600110001"))
+
+    assert find_standard_response(response, req) is None
+
+
 def test_fc10_response() -> None:
     req = add_crc(bytes.fromhex("0110001000020400010002"))
     response = add_crc(bytes.fromhex("011000100002"))
 
     assert standard_response_spec(req) == (1, 0x10, 8)
     assert find_standard_response(response, req) == response
+
+
+def test_fc10_same_length_wrong_start_or_quantity_is_rejected() -> None:
+    req = add_crc(bytes.fromhex("0110001000020400010002"))
+    wrong_start = add_crc(bytes.fromhex("011000110002"))
+    wrong_quantity = add_crc(bytes.fromhex("011000100003"))
+
+    assert find_standard_response(wrong_start, req) is None
+    assert find_standard_response(wrong_quantity, req) is None
 
 
 def test_nonstandard_request_has_no_deterministic_spec() -> None:

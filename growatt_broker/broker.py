@@ -18,6 +18,7 @@ import signal
 import socket
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional, List
 import serial
@@ -67,6 +68,22 @@ def is_retryable_standard_read(request: bytes) -> bool:
     )
 
 
+def shine_policy_disposition(request: bytes, policy: str = "read-only") -> str:
+    """Classify one valid Shine frame before it can reach the inverter."""
+    function = request[1] if len(request) > 1 else None
+    if policy == "transparent":
+        return "forwarded"
+    if function in (0x03, 0x04) and standard_response_spec(request) is not None:
+        return "forwarded"
+    if function == 0x06:
+        return "blocked_write_single"
+    if function == 0x10:
+        return "blocked_write_multiple"
+    if function == 0x20:
+        return "blocked_unknown_fc20"
+    return "blocked_unknown"
+
+
 def find_standard_response(buffer: bytes, request: bytes) -> bytes | None:
     """Find one complete response matching a standard Modbus request.
 
@@ -96,6 +113,12 @@ def find_standard_response(buffer: bytes, request: bytes) -> bytes | None:
             continue
         if function in (0x03, 0x04) and candidate[2] != (normal_length - 5):
             continue
+        if function == 0x06 and candidate != request:
+            continue
+        if function == 0x10:
+            expected = add_crc(request[0:6])
+            if candidate != expected:
+                continue
         return candidate
     return None
 
@@ -172,7 +195,14 @@ class ForensicCapture:
                 }
             )
 
-    def record_tx(self, data: bytes, *, client: str, attempt: int) -> None:
+    def record_tx(
+        self,
+        data: bytes,
+        *,
+        client: str,
+        attempt: int,
+        source: str | None = None,
+    ) -> None:
         if not self.enabled:
             return
         with self._lock:
@@ -185,9 +215,47 @@ class ForensicCapture:
                 {
                     "event": "physical_tx",
                     "client": client,
+                    "source": source or client,
                     "attempt": attempt,
                     "length": len(data),
                     "hex": data.hex(),
+                    "ts": now_iso(),
+                    "monotonic_ns": time.monotonic_ns(),
+                }
+            )
+
+    def record_shine(
+        self,
+        data: bytes,
+        *,
+        direction: str,
+        disposition: str,
+        event: str = "shine_raw",
+    ) -> None:
+        """Record one bounded raw frame on the Shine serial leg."""
+        if not data or not self.enabled:
+            return
+        with self._lock:
+            if (
+                self.max_seconds
+                and time.monotonic() - self.started_mono > self.max_seconds
+            ):
+                return
+            remaining = self.max_bytes - self._captured_bytes
+            if remaining <= 0:
+                return
+            payload = data[:remaining]
+            self._captured_bytes += len(payload)
+            self._write(
+                {
+                    "event": event,
+                    "source": "SHINE",
+                    "direction": direction,
+                    "disposition": disposition,
+                    "length": len(data),
+                    "captured_length": len(payload),
+                    "truncated": len(payload) != len(data),
+                    "hex": payload.hex(),
                     "ts": now_iso(),
                     "monotonic_ns": time.monotonic_ns(),
                 }
@@ -288,7 +356,7 @@ class RTUFramer:
                             self.capture(bytes(self.buf), "buffer_overflow_discard")
                         self.buf.clear()
                     return b""
-                # Don’t try to sleep sub-millisecond; use a small fixed sleep to reduce CPU
+                # Don’t sleep sub-millisecond; use a fixed sleep to reduce CPU use.
                 time.sleep(max(0.001, self.char_time * 0.5))
 
     def read_standard_frame(self, request: bytes, timeout: float = 3.0) -> bytes:
@@ -457,7 +525,26 @@ class SnifferRelay(EventSink, threading.Thread):
                         pass
 
 
+@dataclass
+class DownstreamRequest:
+    request: bytes
+    client: str
+    source: str
+    standard_modbus: bool
+    queued_ns: int
+    done: threading.Event
+    response: bytes = b""
+
+
 class Downstream:
+    """Single-owner downstream serial scheduler.
+
+    The queue selects the next source at transaction boundaries; an active
+    physical transaction is never preempted.
+    """
+
+    _SOURCE_PRIORITIES = {"SHINE": 0, "PROD_TCP": 1, "DEV_TCP": 2}
+
     def __init__(
         self,
         dev: str,
@@ -468,6 +555,7 @@ class Downstream:
         rtimeout: float = 1.5,
         events: Optional[EventHub] = None,
         forensic: ForensicCapture | None = None,
+        shine_burst: int = 8,
     ):
         databits = int(fmt[0])
         parity = fmt[1].upper()
@@ -489,11 +577,19 @@ class Downstream:
             self.char_time,
             capture=(self._capture_rx if forensic else None),
         )
-        self.lock = threading.Lock()
+        self._io_lock = threading.Lock()
+        self._queue_condition = threading.Condition()
+        self._pending: list[DownstreamRequest] = []
+        self._shine_burst = max(1, int(shine_burst))
+        self._consecutive_shine = 0
         self.min_cmd_period = float(min_cmd_period)
         self.rtimeout = float(rtimeout)
         self._last_done = 0.0
         self.events = events
+        self._scheduler = threading.Thread(
+            target=self._run_scheduler, name="growatt-downstream", daemon=True
+        )
+        self._scheduler.start()
 
     def _capture_rx(self, data: bytes, source: str) -> None:
         if self.forensic:
@@ -507,7 +603,7 @@ class Downstream:
 
     def final_drain(self) -> None:
         """Record bytes already available without transmitting anything."""
-        with self.lock:
+        with self._io_lock:
             self._snapshot_buffer("post_test_framer_buffer")
             count = self.ser.in_waiting
             if count:
@@ -521,87 +617,175 @@ class Downstream:
         if wait > 0:
             time.sleep(wait)
 
+    @classmethod
+    def _priority(cls, source: str, client: str) -> int:
+        if source in cls._SOURCE_PRIORITIES:
+            return cls._SOURCE_PRIORITIES[source]
+        if client == "SHINE":
+            return cls._SOURCE_PRIORITIES["SHINE"]
+        return cls._SOURCE_PRIORITIES["PROD_TCP"]
+
+    def _select_request(self) -> DownstreamRequest:
+        non_shine = [item for item in self._pending if item.source != "SHINE"]
+        if self._consecutive_shine >= self._shine_burst and non_shine:
+            selected = min(
+                non_shine,
+                key=lambda item: (
+                    self._priority(item.source, item.client),
+                    item.queued_ns,
+                ),
+            )
+        else:
+            selected = min(
+                self._pending,
+                key=lambda item: (
+                    self._priority(item.source, item.client),
+                    item.queued_ns,
+                ),
+            )
+        self._pending.remove(selected)
+        return selected
+
+    def _run_scheduler(self) -> None:
+        while True:
+            with self._queue_condition:
+                while not self._pending:
+                    self._queue_condition.wait()
+                item = self._select_request()
+            if item.source == "SHINE":
+                self._consecutive_shine += 1
+            else:
+                self._consecutive_shine = 0
+            queue_wait_ms = (time.monotonic_ns() - item.queued_ns) / 1_000_000
+            if self.events:
+                self.events.emit(
+                    event="downstream_served",
+                    role="INFO",
+                    source=item.source,
+                    from_client=item.client,
+                    queue_wait_ms=round(queue_wait_ms, 3),
+                )
+            try:
+                with self._io_lock:
+                    item.response = self._transact_physical(
+                        item.request,
+                        client=item.client,
+                        source=item.source,
+                        standard_modbus=item.standard_modbus,
+                    )
+            except Exception as exc:
+                if self.events:
+                    self.events.emit(
+                        event="downstream_error",
+                        role="ERROR",
+                        source=item.source,
+                        from_client=item.client,
+                        error=str(exc),
+                    )
+                item.response = b""
+            finally:
+                item.done.set()
+
     def transact(
         self,
         req: bytes,
         *,
         client: str = "UNKNOWN",
         standard_modbus: bool = False,
+        source: str | None = None,
     ) -> bytes:
-        with self.lock:
-            resp = b""
-            attempts = 2 if standard_modbus and is_retryable_standard_read(req) else 1
-            for attempt in range(attempts):
-                self._enforce_spacing()
-                # Drain OS input buffer and clear any accumulated bytes in the
-                # framer's internal buffer. If we don't clear the framer buffer
-                # a previously received unsolicited frame can be returned as the
-                # response to this new request, causing mis-attribution and
-                # CRC/timeout confusion.
-                self._snapshot_buffer("pre_request_framer_buffer")
-                drained = self.ser.read(self.ser.in_waiting or 0)
-                if drained:
-                    self._capture_rx(drained, "pre_request_drain")
-                try:
-                    self.framer.buf.clear()
-                    # reset last read timestamp to now so gap heuristics don't
-                    # treat immediately following bytes as coming before the
-                    # request was sent
-                    self.framer.last = time.perf_counter()
-                except Exception:
-                    # be defensive: if clearing fails, continue — we prefer to
-                    # attempt the transaction than raise here
-                    pass
-                if self.events:
-                    self.events.emit(
-                        role="REQ",
-                        from_client=client,
-                        monotonic_ns=time.monotonic_ns(),
-                        crc_ok=crc_ok(req),
-                        hex=req.hex(),
-                        **parse_rtu(req),
-                    )
-                self.ser.write(req)
-                self.ser.flush()
-                if self.forensic:
-                    self.forensic.record_tx(req, client=client, attempt=attempt + 1)
-                if standard_modbus:
-                    resp = self.framer.read_standard_frame(req, timeout=self.rtimeout)
-                else:
-                    resp = self.framer.read_frame(timeout=self.rtimeout)
-                if not resp:
-                    self._snapshot_buffer("timeout_residual")
-                else:
-                    self._snapshot_buffer("leftover_framer_buffer")
-                self._last_done = time.perf_counter()
-                if resp or attempt + 1 == attempts:
-                    break
-                if self.events:
-                    self.events.emit(
-                        event="downstream_retry",
-                        role="WARN",
-                        to="INVERTER",
-                        from_client=client,
-                        attempt=attempt + 2,
-                    )
-            if not resp and self.events:
-                self.events.emit(
-                    event="downstream_timeout",
-                    role="WARN",
-                    to="INVERTER",
-                    from_client=client,
-                    timeout=self.rtimeout,
-                )
+        source = source or ("SHINE" if client == "SHINE" else "PROD_TCP")
+        item = DownstreamRequest(
+            request=req,
+            client=client,
+            source=source,
+            standard_modbus=standard_modbus,
+            queued_ns=time.monotonic_ns(),
+            done=threading.Event(),
+        )
+        with self._queue_condition:
+            self._pending.append(item)
+            self._queue_condition.notify()
+        item.done.wait()
+        return item.response
+
+    def _transact_physical(
+        self,
+        req: bytes,
+        *,
+        client: str,
+        source: str,
+        standard_modbus: bool,
+    ) -> bytes:
+        resp = b""
+        attempts = 2 if standard_modbus and is_retryable_standard_read(req) else 1
+        for attempt in range(attempts):
+            self._enforce_spacing()
+            # Discard bytes that arrived before this request so they cannot be
+            # attributed to the new request.
+            self._snapshot_buffer("pre_request_framer_buffer")
+            drained = self.ser.read(self.ser.in_waiting or 0)
+            if drained:
+                self._capture_rx(drained, "pre_request_drain")
+            self.framer.buf.clear()
+            self.framer.last = time.perf_counter()
+            tx_ns = time.monotonic_ns()
             if self.events:
                 self.events.emit(
-                    role="RSP",
-                    to_client=client,
-                    monotonic_ns=time.monotonic_ns(),
-                    crc_ok=crc_ok(resp),
-                    hex=(resp.hex() if resp else ""),
-                    **parse_rtu(resp or b""),
+                    role="REQ",
+                    source=source,
+                    from_client=client,
+                    monotonic_ns=tx_ns,
+                    crc_ok=crc_ok(req),
+                    hex=req.hex(),
+                    **parse_rtu(req),
                 )
-            return resp
+            self.ser.write(req)
+            self.ser.flush()
+            if self.forensic:
+                self.forensic.record_tx(
+                    req, client=client, source=source, attempt=attempt + 1
+                )
+            if standard_modbus:
+                resp = self.framer.read_standard_frame(req, timeout=self.rtimeout)
+            else:
+                resp = self.framer.read_frame(timeout=self.rtimeout)
+            if not resp:
+                self._snapshot_buffer("timeout_residual")
+            else:
+                self._snapshot_buffer("leftover_framer_buffer")
+            self._last_done = time.perf_counter()
+            if resp or attempt + 1 == attempts:
+                break
+            if self.events:
+                self.events.emit(
+                    event="downstream_retry",
+                    role="WARN",
+                    to="INVERTER",
+                    source=source,
+                    from_client=client,
+                    attempt=attempt + 2,
+                )
+        if not resp and self.events:
+            self.events.emit(
+                event="downstream_timeout",
+                role="WARN",
+                to="INVERTER",
+                source=source,
+                from_client=client,
+                timeout=self.rtimeout,
+            )
+        if self.events:
+            self.events.emit(
+                role="RSP",
+                source=source,
+                to_client=client,
+                monotonic_ns=time.monotonic_ns(),
+                crc_ok=crc_ok(resp),
+                hex=(resp.hex() if resp else ""),
+                **parse_rtu(resp or b""),
+            )
+        return resp
 
 
 class ShineEndpoint(threading.Thread):
@@ -612,6 +796,8 @@ class ShineEndpoint(threading.Thread):
         fmt: str,
         downstream: Downstream,
         events: Optional[EventHub] = None,
+        forensic: ForensicCapture | None = None,
+        policy: str = "read-only",
     ):
         super().__init__(daemon=True)
         self.dev = dev
@@ -619,6 +805,8 @@ class ShineEndpoint(threading.Thread):
         self.fmt = fmt
         self.ds = downstream
         self.events = events
+        self.forensic = forensic
+        self.policy = policy
         self.ser: Optional[serial.Serial] = None
         self.framer: Optional[RTUFramer] = None
         self._online = False
@@ -695,10 +883,83 @@ class ShineEndpoint(threading.Thread):
                             hex=req.hex(),
                         )
                     continue
-                resp = self.ds.transact(req, client="SHINE")
+
+                function = req[1]
+                disposition = shine_policy_disposition(req, self.policy)
+                standard_read = disposition == "forwarded" and function in (0x03, 0x04)
+
+                if self.forensic:
+                    self.forensic.record_shine(
+                        req,
+                        direction="shine_to_broker",
+                        disposition=disposition,
+                        event="shine_request_raw",
+                    )
+                if self.events:
+                    self.events.emit(
+                        event="shine_request",
+                        role="REQ",
+                        source="SHINE",
+                        from_client="SHINE",
+                        disposition=disposition,
+                        crc_ok=True,
+                        hex=req.hex(),
+                        **parse_rtu(req),
+                    )
+
+                if disposition != "forwarded":
+                    resp = add_crc(bytes([req[0], function | 0x80, 0x01]))
+                    if self.events:
+                        self.events.emit(
+                            event="shine_policy_blocked",
+                            role="DROP",
+                            source="SHINE",
+                            from_client="SHINE",
+                            disposition=disposition,
+                            hex=req.hex(),
+                            **parse_rtu(req),
+                        )
+                else:
+                    started = time.monotonic_ns()
+                    resp = self.ds.transact(
+                        req,
+                        client="SHINE",
+                        source="SHINE",
+                        standard_modbus=standard_read,
+                    )
+                    if self.events:
+                        self.events.emit(
+                            event="shine_forwarded",
+                            role="INFO",
+                            source="SHINE",
+                            from_client="SHINE",
+                            disposition=disposition,
+                            duration_ms=round(
+                                (time.monotonic_ns() - started) / 1_000_000, 3
+                            ),
+                            **parse_rtu(req),
+                        )
                 if resp:
                     self.ser.write(resp)
                     self.ser.flush()
+                    if self.forensic:
+                        self.forensic.record_shine(
+                            resp,
+                            direction="broker_to_shine",
+                            disposition=disposition,
+                            event="shine_response_raw",
+                        )
+                    if self.events:
+                        self.events.emit(
+                            event="shine_response",
+                            role="RSP",
+                            source="SHINE",
+                            to_client="SHINE",
+                            disposition=disposition,
+                            crc_ok=crc_ok(resp),
+                            hex=resp.hex(),
+                            **parse_rtu(resp),
+                        )
                 else:
                     if self.events:
                         self.events.emit(
@@ -739,11 +1000,13 @@ class TCPServer(threading.Thread):
         bind_port: int,
         downstream: Downstream,
         events: EventHub | None = None,
+        source: str = "PROD_TCP",
     ):
         super().__init__(daemon=True)
         self.addr = (bind_host, bind_port)
         self.ds = downstream
         self.events = events
+        self.source = source
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(self.addr)
@@ -785,6 +1048,7 @@ class TCPServer(threading.Thread):
                         self.events.emit(
                             event="tcp_duplicate_suppressed",
                             role="INFO",
+                            source=self.source,
                             from_client=peer,
                             transaction_id=int.from_bytes(tid, "big"),
                             unit=uid,
@@ -793,7 +1057,10 @@ class TCPServer(threading.Thread):
                     continue
                 rtu_req = add_crc(bytes([uid]) + pdu)
                 rtu_resp = self.ds.transact(
-                    rtu_req, client=peer, standard_modbus=True
+                    rtu_req,
+                    client=peer,
+                    source=self.source,
+                    standard_modbus=True,
                 )
                 if not rtu_resp or len(rtu_resp) < 4 or not crc_ok(rtu_resp):
                     break
@@ -849,6 +1116,12 @@ def main():
     ap.add_argument("--shine-baud", type=int, help="Shine baudrate")
     ap.add_argument("--shine-bytes", default=None, help="Shine format, e.g. 8E1")
     ap.add_argument(
+        "--shine-policy",
+        choices=("read-only", "transparent"),
+        default="read-only",
+        help="Shine forwarding policy; read-only blocks writes and unknown functions",
+    )
+    ap.add_argument(
         "--baud", type=int, default=9600, help="Default baud if side-specific not set"
     )
     ap.add_argument(
@@ -874,6 +1147,12 @@ def main():
     )
     ap.add_argument(
         "--rtimeout", type=float, default=1.5, help="RTU read timeout seconds"
+    )
+    ap.add_argument(
+        "--shine-burst",
+        type=int,
+        default=8,
+        help="Maximum consecutive Shine transactions before serving another source",
     )
     ap.add_argument(
         "--log",
@@ -943,10 +1222,19 @@ def main():
         rtimeout=args.rtimeout,
         events=events,
         forensic=forensic,
+        shine_burst=args.shine_burst,
     )
     shine = None
     if args.shine:
-        shine = ShineEndpoint(args.shine, sh_baud, sh_bytes, ds, events=events)
+        shine = ShineEndpoint(
+            args.shine,
+            sh_baud,
+            sh_bytes,
+            ds,
+            events=events,
+            forensic=forensic,
+            policy=args.shine_policy,
+        )
         shine.start()
 
     tcp_specs = []
@@ -957,12 +1245,18 @@ def main():
 
     servers = []
     tcp_desc = []
-    for spec in tcp_specs:
+    for index, spec in enumerate(tcp_specs):
         try:
             host, port = parse_host_port(spec)
         except ValueError as exc:
             ap.error(str(exc))
-        server = TCPServer(host, port, ds, events=events)
+        server = TCPServer(
+            host,
+            port,
+            ds,
+            events=events,
+            source="PROD_TCP" if index == 0 else "DEV_TCP",
+        )
         server.start()
         servers.append(server)
         tcp_desc.append(f"{host}:{port}")
