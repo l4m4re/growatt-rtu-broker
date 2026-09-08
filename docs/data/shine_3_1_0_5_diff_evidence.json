@@ -1,0 +1,110 @@
+{
+  "authoritative": {
+    "path": "/workspaces/HA-core/external/bin/ShineWiFi-X-3.1.0.5.bin",
+    "size": 4194304,
+    "sha256": "b5e0644d03a33503812bd2770fde49762bd72e03dde3d92b5d68ad2a69afc173"
+  },
+  "identity_search": {
+    "serial": "XGD6CCN109",
+    "exact_or_encoded_hits": [],
+    "partial_token_hits": {
+      "XGD": [],
+      "xgd": [],
+      "CCN": [],
+      "ccn": []
+    },
+    "tail_identity_like_strings": [
+      {
+        "offsets": [4182196, 4186292],
+        "text": "ESP_74F8DE",
+        "classification": "STRONG_CORRELATION_HARDWARE_DERIVED",
+        "scope": "ESP-local identifier; not proof of Growatt serial derivation"
+      }
+    ],
+    "known_hardware_identity": {
+      "mac": "e8:68:e7:74:f8:de",
+      "chip_id": "0x0074f8de",
+      "chip_id_decimal": 7665886,
+      "mac_raw_hits": ["0x3fd484", "0x3fe484"],
+      "chip_id_24_be_hits": ["0x3fd487", "0x3fe487"],
+      "chip_id_hex_upper_hits": ["0x3fd0b8", "0x3fe0b8"],
+      "reversed_mac_hits": [],
+      "ascii_mac_hits": [],
+      "chip_id_32_or_decimal_hits": [],
+      "serial_suffix_hits": [],
+      "serial_origin_classification": "UNKNOWN"
+    },
+    "static_api_evidence": {
+      "mac_format_strings": [
+        "soft_AP_Init() wifi_get_macaddr = %s",
+        "IOT_ESP_wifiMACAddr_Get = %s",
+        "%02x:%02x:%02x:%02x:%02x:%02x"
+      ],
+      "call_sites": ["0x40242f54", "0x4024a93b"],
+      "chip_id_symbol_or_sdk_name_hits": [],
+      "serial_conversion_path_proven": false,
+      "base32_base36_path_proven": false
+    },
+    "button_softap_investigation": {
+      "adc_key_task_vma_range": "0x40237170-0x40237427",
+      "adc_accessor_vma": "0x40206708",
+      "adc_cached_value_address": "0x3ffe8a28",
+      "adc_threshold_to_softap_end_to_end": "PARTIALLY_TRACED",
+      "softap_initializer_vma_range": "0x40242d5c-0x402430a9",
+      "opmode_setter_wrapper_vma": "0x4024ab00",
+      "opmode_setter_core_vma": "0x402043a4",
+      "softap_config_setter_wrapper_vma": "0x40205c48",
+      "softap_ip_info_wrapper_vma": "0x40205778",
+      "dhcp_followup_wrapper_vma": "0x4020571c",
+      "softap_config_object_size": 108,
+      "ip_literal_hits": ["0x42e48", "0x6cdbe"],
+      "ip": "192.168.10.100",
+      "netmask": "255.255.255.0",
+      "gateway": "0.0.0.0",
+      "ssid_source": "CONFIG_FLASH_BACKED_RUNTIME_BUFFER_NOT_FIELD_PROVEN",
+      "ssid_mac_copy_proven": false,
+      "live_ssid_reported": "XGD6CCN109",
+      "live_ssid_is_binary_proven": false
+    }
+  },
+  "images": {
+    "stock_4m": {
+      "sha256": "718b31ccc3a7d51c1d3ec6101216b0d41a2b266a3d6c99963594c0f8ecee49ab",
+      "changed_bytes_vs_authoritative": 498126,
+      "changed_sectors_vs_authoritative": 172
+    },
+    "stock_3_0_0_2": {
+      "sha256": "4b06602f07a03da07a53af256bda56e6d76e3cab258ec171731b3ab047814700",
+      "changed_bytes_vs_authoritative": 929194,
+      "changed_sectors_vs_authoritative": 281
+    }
+  },
+  "layout": {
+    "primary_header": {
+      "offset": 0,
+      "entry_point": "0x40100438",
+      "segments": 3,
+      "flash_mode": "QIO",
+      "checksum": "0xd8",
+      "checksum_valid": true
+    },
+    "aligned_secondary_headers": [],
+    "nonblank_regions": [
+      {"start": "0x000000", "end": "0x06ffff", "role": "primary application/IROM/resources"},
+      {"start": "0x100000", "end": "0x13ffff", "role": "embedded secondary-firmware/resource candidate"},
+      {"start": "0x3f8000", "end": "0x3fffff", "role": "ESP SDK/system-parameter candidate"}
+    ]
+  },
+  "protocol_findings": {
+    "h43": {"classification": "SEMANTICALLY_MATCHING", "vma": "0x40244438"},
+    "profile_13ec_3000_3125_125": {"classification": "SEMANTICALLY_MATCHING", "vma_range": "0x40243f18-0x402441a1"},
+    "h209": {"classification": "SEMANTICALLY_MATCHING", "vma": "0x402447ac"},
+    "fc20": {"classification": "UNKNOWN", "live_evidence": true},
+    "h188_fc06": {"classification": "UNKNOWN", "live_evidence": true}
+  },
+  "restoration": {
+    "safe_serial_only_patch": false,
+    "shine_b_complete_dump_required": true,
+    "identity_cloning_prohibited": true
+  }
+}
