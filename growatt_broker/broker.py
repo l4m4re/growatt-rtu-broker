@@ -1177,9 +1177,13 @@ class CacheGatewayService:
         policy = self._policy_for(key)
         return policy.key if policy is not None else key
 
-    def _max_age(self, key: RegisterKey) -> float:
+    def _max_age(self, key: RegisterKey, *, client: str) -> float:
         policy = self._policy_for(key)
-        return policy.max_age if policy is not None else self._ON_DEMAND_MAX_AGE
+        if policy is None:
+            return self._ON_DEMAND_MAX_AGE
+        if client != "SHINE":
+            return max(policy.max_age, 60.0)
+        return policy.max_age
 
     def _wire_read_request(self, key: RegisterKey) -> bytes:
         return add_crc(
@@ -1264,7 +1268,7 @@ class CacheGatewayService:
         now: float,
         force_refresh: bool = False,
     ) -> tuple[CachedRead | None, str | None]:
-        max_age = self._max_age(key)
+        max_age = self._max_age(key, client=client)
         with self._lock:
             cached = self.cache.read(key, now=now, max_age=max_age)
         if cached is not None and not force_refresh:
@@ -1939,7 +1943,7 @@ class ShineEndpoint(threading.Thread):
                         and not resp
                         and not (
                             result.reason
-                            and result.reason.startswith("physical passthrough")
+                            and result.reason.startswith("physical")
                         )
                     ):
                         resp = add_crc(bytes([req[0], function | 0x80, 0x0B]))

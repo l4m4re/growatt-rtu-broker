@@ -372,6 +372,31 @@ def test_gateway_reads_from_one_native_block_and_replays_subsets() -> None:
     assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
 
 
+def test_ha_uses_a_recent_shine_snapshot_before_refreshing() -> None:
+    downstream = _FakeDownstream()
+    gateway = CacheGatewayService(downstream)
+    key = RegisterKey(4, 3000, 125)
+    gateway.cache.put_block(
+        key,
+        range(125),
+        captured_at=10.0,
+        source_transaction="shine-read",
+    )
+    request = add_crc(bytes.fromhex("01040bb80001"))
+
+    result = gateway.handle_standard_request(
+        request,
+        client="HA",
+        source="PROD_TCP",
+        now=50.0,
+    )
+
+    assert result.status == "served"
+    assert result.read is not None
+    assert result.read.words == (0,)
+    assert downstream.requests == []
+
+
 def test_gateway_fc20_is_fetched_once_then_replayed() -> None:
     downstream = _FakeDownstream()
     request = bytes.fromhex("01200000006481e6")
