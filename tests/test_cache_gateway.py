@@ -5,6 +5,7 @@ from growatt_broker.cache_gateway import (
     CACHE_GATEWAY_DEFAULT_ENABLED,
     BrokerMode,
     ClientReadRequest,
+    GatewayResult,
     OpaqueProtocolCache,
     PatternKey,
     PollCoordinator,
@@ -261,6 +262,52 @@ def test_unknown_shine_function_is_quarantined_by_default() -> None:
 
     assert result.status == "quarantined"
     assert result.response is None
+
+
+def test_unknown_shine_function_uses_physical_passthrough_when_configured() -> None:
+    request = add_crc(bytes.fromhex("012100000001"))
+    response = add_crc(bytes.fromhex("01210100"))
+    seen: list[bytes] = []
+
+    def passthrough(frame: bytes, _now: float) -> GatewayResult:
+        seen.append(frame)
+        return GatewayResult("served", "SHINE", response=response)
+
+    _, coordinator = _coordinator()
+    adapter = ShineVirtualInverterAdapter(
+        coordinator,
+        discovery_profiles=(min_6000tl_xh_discovery_profile(),),
+        passthrough_handler=passthrough,
+    )
+
+    result = adapter.handle_request(request, now=0.0)
+
+    assert result.status == "served"
+    assert result.response == response
+    assert seen == [request]
+
+
+def test_shine_writes_use_physical_passthrough_when_configured() -> None:
+    request = add_crc(bytes.fromhex("010600bc0001"))
+    response = request
+    seen: list[bytes] = []
+
+    def passthrough(frame: bytes, _now: float) -> GatewayResult:
+        seen.append(frame)
+        return GatewayResult("served", "SHINE", response=response)
+
+    _, coordinator = _coordinator()
+    adapter = ShineVirtualInverterAdapter(
+        coordinator,
+        discovery_profiles=(),
+        passthrough_handler=passthrough,
+    )
+
+    result = adapter.handle_request(request, now=0.0)
+
+    assert result.status == "served"
+    assert result.response == response
+    assert seen == [request]
 
 
 def test_cache_gateway_is_explicitly_non_default() -> None:

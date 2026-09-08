@@ -493,6 +493,7 @@ class ShineVirtualInverterAdapter:
         fc20_cache: OpaqueProtocolCache | None = None,
         request_handler: Callable[[bytes, float], GatewayResult] | None = None,
         fc20_handler: Callable[[bytes, float], GatewayResult] | None = None,
+        passthrough_handler: Callable[[bytes, float], GatewayResult] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.discovery_profiles = {
@@ -501,7 +502,14 @@ class ShineVirtualInverterAdapter:
         self.fc20_cache = fc20_cache or OpaqueProtocolCache()
         self.request_handler = request_handler
         self.fc20_handler = fc20_handler
+        self.passthrough_handler = passthrough_handler
         self.mode = BrokerMode.SHINE_RECOVERING
+
+    def _passthrough(self, frame: bytes, now: float, reason: str) -> GatewayResult:
+        if self.passthrough_handler is not None:
+            self.mode = BrokerMode.SHINE_PRESENT
+            return self.passthrough_handler(frame, now)
+        return GatewayResult("quarantined", "SHINE", reason=reason)
 
     def handle_request(self, frame: bytes, *, now: float) -> GatewayResult:
         if not crc_ok(frame) or len(frame) < 2:
@@ -517,15 +525,18 @@ class ShineVirtualInverterAdapter:
             )
         function = frame[1]
         if function in (0x06, 0x10):
-            return GatewayResult("quarantined", "SHINE", reason="write_not_allowed")
+            return self._passthrough(frame, now, "write_not_allowed")
         if function == 0x20:
             if self.fc20_handler is not None:
-                return self.fc20_handler(frame, now)
+                result = self.fc20_handler(frame, now)
+                if result.status not in {"quarantined", "pending"}:
+                    return result
+                return self._passthrough(frame, now, result.reason or "fc20_miss")
             cached = self.fc20_cache.get(
                 frame, now=now, max_age=self.coordinator.max_age
             )
             if cached is None:
-                return GatewayResult("pending", "SHINE", reason="fc20_cache_miss")
+                return self._passthrough(frame, now, "fc20_cache_miss")
             return GatewayResult(
                 "served",
                 "SHINE",
@@ -533,16 +544,14 @@ class ShineVirtualInverterAdapter:
                 reason="fc20_opaque_cache",
             )
         if function not in (0x03, 0x04) or len(frame) != 8:
-            return GatewayResult("quarantined", "SHINE", reason="unsupported_request")
+            return self._passthrough(frame, now, "unsupported_request")
         key = RegisterKey(
             function,
             int.from_bytes(frame[2:4], "big"),
             int.from_bytes(frame[4:6], "big"),
         )
         if frame[0] == 0:
-            return GatewayResult(
-                "quarantined", "SHINE", reason="unprofiled_unit_zero_read"
-            )
+            return self._passthrough(frame, now, "unprofiled_unit_zero_read")
         if self.request_handler is not None:
             self.mode = BrokerMode.SHINE_PRESENT
             return self.request_handler(frame, now)

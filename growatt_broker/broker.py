@@ -373,24 +373,92 @@ class RTUFramer:
                 # Don’t sleep sub-millisecond; use a fixed sleep to reduce CPU use.
                 time.sleep(max(0.001, self.char_time * 0.5))
 
-    def read_standard_frame(self, request: bytes, timeout: float = 3.0) -> bytes:
+    def read_standard_frame(
+        self,
+        request: bytes,
+        timeout: float = 3.0,
+        on_unmatched: Callable[[bytes], None] | None = None,
+    ) -> bytes:
         """Read an exact-length response for a standard Modbus request."""
         if standard_response_spec(request) is None:
             return self.read_frame(timeout=timeout)
 
+        unit, function, normal_length = standard_response_spec(request)
         start = time.perf_counter()
+
+        def first_valid_frame(
+            data: bytes, limit: int | None = None
+        ) -> tuple[int, int, bytes] | None:
+            end_limit = len(data) if limit is None else min(limit, len(data))
+            for frame_start in range(end_limit - 3):
+                for frame_end in range(frame_start + 4, end_limit + 1):
+                    candidate = data[frame_start:frame_end]
+                    if crc_ok(candidate):
+                        return frame_start, frame_end, candidate
+            return None
+
+        def possible_partial_response(candidate: bytes) -> bool:
+            return (
+                len(candidate) < normal_length
+                and len(candidate) >= 3
+                and candidate[0] == unit
+                and candidate[1] == function
+                and candidate[2] == normal_length - 5
+            )
+
+        def report_unmatched_prefix(limit: int) -> None:
+            while on_unmatched is not None:
+                found = first_valid_frame(bytes(self.buf), limit)
+                if found is None:
+                    return
+                frame_start, frame_end, candidate = found
+                if frame_start == 0 and possible_partial_response(candidate):
+                    return
+                del self.buf[:frame_end]
+                limit -= frame_end
+                on_unmatched(candidate)
+
         while True:
             if self.ser.in_waiting:
                 self._read_available("normal_read")
-                response = find_standard_response(bytes(self.buf), request)
-                if response is not None:
-                    end = self.buf.find(response) + len(response)
-                    del self.buf[:end]
-                    return response
+            buffer = bytes(self.buf)
+            response = find_standard_response(buffer, request)
+            if response is not None:
+                response_start = buffer.find(response)
+                report_unmatched_prefix(response_start)
+                if bytes(self.buf).find(response) == -1:
+                    continue
+                end = self.buf.find(response) + len(response)
+                del self.buf[:end]
+                return response
+
+            if on_unmatched is not None and time.perf_counter() - self.last >= self.gap:
+                report_unmatched_prefix(len(self.buf))
 
             if time.perf_counter() - start > timeout:
                 return b""
             time.sleep(max(0.001, self.char_time * 0.5))
+
+    def read_matching(
+        self,
+        matcher: Callable[[bytes], bool],
+        *,
+        timeout: float = 3.0,
+        on_unmatched: Callable[[bytes], None] | None = None,
+    ) -> bytes:
+        """Read frames until one satisfies the caller's response predicate."""
+        deadline = time.perf_counter() + timeout
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                return b""
+            frame = self.read_frame(timeout=remaining)
+            if not frame:
+                return b""
+            if matcher(frame):
+                return frame
+            if on_unmatched is not None:
+                on_unmatched(frame)
 
 
 def now_iso() -> str:
@@ -615,6 +683,7 @@ class Downstream:
         self._last_done = 0.0
         self._consecutive_timeouts = 0
         self._reopen_after_timeouts = 2
+        self._async_frame_handler: Callable[[bytes], None] | None = None
         self.events = events
         self._scheduler = threading.Thread(
             target=self._run_scheduler, name="growatt-downstream", daemon=True
@@ -706,6 +775,47 @@ class Downstream:
     def _capture_event(self, event: str, **fields: object) -> None:
         if self.events:
             self.events.emit(event=event, **fields)
+
+    def set_async_frame_handler(self, handler: Callable[[bytes], None] | None) -> None:
+        """Register the destination for valid unsolicited inverter frames."""
+        self._async_frame_handler = handler
+
+    def _report_async_frame(self, request: bytes, frame: bytes) -> None:
+        self._capture_event(
+            "async_frame_observed",
+            role="INFO",
+            source="INVERTER",
+            expected_function=request[1],
+            hex=frame.hex(),
+            **parse_rtu(frame),
+        )
+        if self._async_frame_handler is not None:
+            try:
+                self._async_frame_handler(frame)
+            except Exception as exc:
+                self._capture_event(
+                    "async_frame_forward_failed",
+                    role="WARN",
+                    source="INVERTER",
+                    error=str(exc),
+                    hex=frame.hex(),
+                )
+
+    def _read_fc20_response(self, request: bytes) -> bytes:
+        def matches(frame: bytes) -> bool:
+            if not crc_ok(frame) or len(frame) < 2:
+                return False
+            if frame[0] != request[0]:
+                return False
+            if frame[1] == (request[1] | 0x80):
+                return len(frame) == 5
+            return frame[1] == request[1] and len(frame) == 205 and frame[2] == 200
+
+        return self.framer.read_matching(
+            matches,
+            timeout=self.rtimeout,
+            on_unmatched=lambda frame: self._report_async_frame(request, frame),
+        )
 
     def _ensure_serial(self) -> bool:
         if self.ser is not None and self.ser.is_open:
@@ -875,7 +985,13 @@ class Downstream:
                     req, client=client, source=source, attempt=attempt + 1
                 )
             if standard_modbus:
-                resp = self.framer.read_standard_frame(req, timeout=self.rtimeout)
+                resp = self.framer.read_standard_frame(
+                    req,
+                    timeout=self.rtimeout,
+                    on_unmatched=lambda frame: self._report_async_frame(req, frame),
+                )
+            elif req[1] == 0x20:
+                resp = self._read_fc20_response(req)
             else:
                 resp = self.framer.read_frame(timeout=self.rtimeout)
             if not resp:
@@ -1208,6 +1324,35 @@ class CacheGatewayService:
             reason="cache",
         )
 
+    def handle_shine_passthrough(
+        self,
+        request: bytes,
+        *,
+        client: str = "SHINE",
+        source: str = "SHINE",
+        now: float | None = None,
+    ) -> GatewayResult:
+        """Forward a Shine request that has no cache representation."""
+        del now
+        response = self.downstream.transact(
+            request,
+            client=client,
+            source=source,
+            standard_modbus=standard_response_spec(request) is not None,
+        )
+        if response:
+            self._emit(
+                "shine_physical_passthrough",
+                role="INFO",
+                client=client,
+                source=source,
+                **parse_rtu(request),
+            )
+            return GatewayResult(
+                "served", client, response=response, reason="physical_passthrough"
+            )
+        return GatewayResult("failed", client, reason="physical passthrough timeout")
+
     def handle_fc20(
         self,
         request: bytes,
@@ -1239,6 +1384,16 @@ class CacheGatewayService:
             source=source,
             standard_modbus=False,
         )
+        if (
+            response
+            and cache_crc_ok(response)
+            and response[0] == request[0]
+            and response[1] == (request[1] | 0x80)
+            and len(response) == 5
+        ):
+            return GatewayResult(
+                "served", client, response=response, reason="fc20_physical_exception"
+            )
         if (
             not response
             or not cache_crc_ok(response)
@@ -1521,6 +1676,39 @@ class ShineEndpoint(threading.Thread):
         self.ser: Optional[serial.Serial] = None
         self.framer: Optional[RTUFramer] = None
         self._online = False
+        self._write_lock = threading.Lock()
+        self.ds.set_async_frame_handler(self._forward_async_frame)
+
+    def _forward_async_frame(self, frame: bytes) -> None:
+        """Forward unsolicited inverter frames to the physical Shine."""
+        with self._write_lock:
+            if self.ser is None or not self.ser.is_open:
+                if self.events:
+                    self.events.emit(
+                        event="async_frame_no_shine",
+                        role="WARN",
+                        source="INVERTER",
+                        hex=frame.hex(),
+                    )
+                return
+            self.ser.write(frame)
+            self.ser.flush()
+        if self.forensic:
+            self.forensic.record_shine(
+                frame,
+                direction="inverter_to_shine_async",
+                disposition="forwarded",
+                event="shine_async_response_raw",
+            )
+        if self.events:
+            self.events.emit(
+                event="async_frame_forwarded",
+                role="INFO",
+                source="INVERTER",
+                to_client="SHINE",
+                hex=frame.hex(),
+                **parse_rtu(frame),
+            )
 
     def _open_port(self) -> None:
         databits = int(self.fmt[0])
@@ -1604,7 +1792,12 @@ class ShineEndpoint(threading.Thread):
                     continue
 
                 function = req[1]
-                disposition = shine_policy_disposition(req, self.policy)
+                # In virtual-adapter mode the cache is an optimization only;
+                # every valid Shine frame remains eligible for physical passthrough.
+                disposition = shine_policy_disposition(
+                    req,
+                    "transparent" if self.virtual_adapter is not None else self.policy,
+                )
                 standard_request = (
                     disposition == "forwarded"
                     and standard_response_spec(req) is not None
@@ -1685,8 +1878,9 @@ class ShineEndpoint(threading.Thread):
                             **parse_rtu(req),
                         )
                 if resp:
-                    self.ser.write(resp)
-                    self.ser.flush()
+                    with self._write_lock:
+                        self.ser.write(resp)
+                        self.ser.flush()
                     if self.forensic:
                         self.forensic.record_shine(
                             resp,
@@ -2035,6 +2229,14 @@ def main():
                         client="SHINE",
                         source="SHINE",
                         now=now,
+                    ),
+                    passthrough_handler=lambda frame, now: (
+                        gateway.handle_shine_passthrough(
+                            frame,
+                            client="SHINE",
+                            source="SHINE",
+                            now=now,
+                        )
                     ),
                 )
     if args.shine and raw_shine is None:

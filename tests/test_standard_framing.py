@@ -35,9 +35,7 @@ class FakeSerial:
 
 def request(function: int, address: int, count: int) -> bytes:
     return add_crc(
-        bytes([1, function])
-        + address.to_bytes(2, "big")
-        + count.to_bytes(2, "big")
+        bytes([1, function]) + address.to_bytes(2, "big") + count.to_bytes(2, "big")
     )
 
 
@@ -151,3 +149,40 @@ def test_nonstandard_request_uses_existing_generic_reader() -> None:
     framer = RTUFramer(serial, char_time=0.001)
 
     assert framer.read_standard_frame(req, timeout=0.1) == response
+
+
+def test_matching_reader_discards_valid_unrelated_async_frame() -> None:
+    async_frame = add_crc(bytes.fromhex("00090100"))
+    expected = add_crc(bytes([1, 0x20, 200]) + bytes(range(200)))
+    serial = FakeSerial()
+    serial.feed(async_frame + expected)
+    framer = RTUFramer(serial, char_time=0.001)
+    discarded: list[bytes] = []
+
+    result = framer.read_matching(
+        lambda frame: frame == expected,
+        timeout=0.2,
+        on_unmatched=discarded.append,
+    )
+
+    assert result == expected
+    assert discarded == [async_frame]
+
+
+def test_standard_reader_reports_unrelated_frame_without_losing_response() -> None:
+    request_frame = request(0x03, 88, 1)
+    async_frame = add_crc(bytes.fromhex("00090100"))
+    expected = add_crc(bytes.fromhex("0103020131"))
+    serial = FakeSerial()
+    serial.feed(async_frame + expected)
+    framer = RTUFramer(serial, char_time=0.001)
+    observed: list[bytes] = []
+
+    result = framer.read_standard_frame(
+        request_frame,
+        timeout=0.2,
+        on_unmatched=observed.append,
+    )
+
+    assert result == expected
+    assert observed == [async_frame]
