@@ -1,7 +1,7 @@
 # HA-DEV-3C cache gateway live integration
 
-Status: Stage A accepted; paused before the user-controlled Stage B Shine
-insertion.
+Status: Stage A accepted; proceeding to Stage B with the already-connected
+Shine after user confirmation.
 
 ## Legacy baseline
 
@@ -41,7 +41,7 @@ baud:     115200 8N1
 ports:    5020, 5021, 5700
 period:   1.0 s
 timeout:  1.5 s
-shine:    not opened or mapped in Stage A
+Shine:    physically connected, but intentionally not opened or mapped in Stage A
 ```
 
 The candidate was the only physical inverter serial owner. Its container used
@@ -77,13 +77,18 @@ Stage A is therefore accepted for progression to the real Shine test. The
 first failed candidate remains stopped as `growatt-broker-ha3c-stage-a`; the
 accepted retry remains the active canary as `growatt-broker-ha3c-stage-a-r2`.
 
-## Stage-B gate
+## Stage-B transition
 
 No Shine serial was opened by Stage A, and no Shine request or write was
-forwarded. The next step is user-controlled:
+forwarded. The user confirmed that the original Shine remained physically
+plugged in throughout Stage A, so no additional insertion is needed.
 
-> The HA-only cache broker is stable. Please plug the original stock
-> ShineWiFi-X into the Raspberry Pi now.
+The next controlled transition is to stop Stage A and start the same image in
+`cache+shine` mode with this separate Shine path:
+
+```text
+/dev/serial/by-id/usb-04e2_1410-if00-port0
+```
 
 After confirmation, the same candidate will be restarted in `cache+shine`
 mode with separate stable inverter and Shine paths. Discovery will be answered

@@ -33,7 +33,7 @@ Authoritative image:
 ```text
 path:   /workspaces/HA-core/external/bin/ShineWiFi-X-3.1.0.5.bin
 size:   4194304 bytes (0x400000)
-sha256: b5e0644d03a33503812bd2770fde49762bd72e03dde3d92b5d68afc173
+sha256: b5e0644d03a33503812bd2770fde49762bd72e03dde3d92b5d68ad2a69afc173
 ```
 
 The image was independently read and hash-checked against the supplied value.
