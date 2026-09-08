@@ -992,6 +992,17 @@ class Downstream:
                 )
             elif req[1] == 0x20:
                 resp = self._read_fc20_response(req)
+            elif source == "SHINE":
+                resp = self.framer.read_matching(
+                    lambda frame: (
+                        crc_ok(frame)
+                        and len(frame) >= 2
+                        and frame[0] == req[0]
+                        and frame[1] in (req[1], req[1] | 0x80)
+                    ),
+                    timeout=self.rtimeout,
+                    on_unmatched=lambda frame: self._report_async_frame(req, frame),
+                )
             else:
                 resp = self.framer.read_frame(timeout=self.rtimeout)
             if not resp:
