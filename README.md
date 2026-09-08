@@ -157,6 +157,8 @@ See [`docker-compose.yml`](docker-compose.yml) for the containerised equivalent.
    MIN_PERIOD=1.0
    RTIMEOUT=1.5
    LOG_PATH=-                 # Disable on-disk logs for production HA
+   HOTPLUG_DEVICES=1          # Follow USB serial re-enumeration in the container
+   BROKER_MODE=legacy         # Keep the known-good path unless a canary is approved
    ```
 3. Run `docker compose up -d`.
 
@@ -165,6 +167,11 @@ for Home Assistant on port `5020`, exposes a second TCP listener on `5021` for a
 stream on port `5700` for remote sniffing. Logs are suppressed on disk (`LOG_PATH=-`) but still available live through the
 sniff stream. All ports are bound on the host IP because the compose file uses `network_mode: host`. See
 [`docs/ha_live_setup.md`](docs/ha_live_setup.md) for a more detailed walk-through.
+
+The broker reopens the inverter's stable udev alias after repeated time-outs
+and clears stale serial/framer buffers. Docker deployments must expose the
+host `/dev` tree (as `HOTPLUG_DEVICES=1`) for a re-enumerated tty to be visible
+inside the container.
 
 ## Limitations
 

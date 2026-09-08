@@ -1,14 +1,9 @@
-"""Cache-centric gateway primitives for a future Growatt broker mode.
-
-This module is deliberately not wired into the production broker yet.  It
-models the ownership, cache, demand, and virtual-Shine boundaries so they can
-be tested before a live transport migration.
-"""
+"""Cache-centric primitives used by the opt-in Growatt broker mode."""
 
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from statistics import median
@@ -33,6 +28,18 @@ def crc_ok(frame: bytes) -> bool:
     return len(frame) >= 4 and modbus_crc(frame[:-2]) == int.from_bytes(
         frame[-2:], "little"
     )
+
+
+def build_read_response(request: bytes, words: Iterable[int]) -> bytes:
+    """Build an RTU read response while preserving the request identity."""
+    values = tuple(int(word) & 0xFFFF for word in words)
+    if len(request) < 6 or request[1] not in (0x03, 0x04):
+        raise ValueError("request is not a standard read")
+    count = int.from_bytes(request[4:6], "big")
+    if len(values) != count:
+        raise ValueError("word count does not match request")
+    body = bytes([request[0], request[1], count * 2])
+    return add_crc(body + b"".join(word.to_bytes(2, "big") for word in values))
 
 
 class CacheQuality(str, Enum):
@@ -134,6 +141,8 @@ class RegisterCache:
         quality: CacheQuality = CacheQuality.GOOD,
     ) -> RegisterSnapshot:
         values = tuple(int(word) & 0xFFFF for word in words)
+        if not 1 <= key.count <= 125 or len(values) != key.count:
+            raise ValueError("snapshot word count does not match register key")
         self._generation += 1
         snapshot = RegisterSnapshot(
             key=key,
@@ -482,12 +491,16 @@ class ShineVirtualInverterAdapter:
         *,
         discovery_profiles: Iterable[DiscoveryProfile],
         fc20_cache: OpaqueProtocolCache | None = None,
+        request_handler: Callable[[bytes, float], GatewayResult] | None = None,
+        fc20_handler: Callable[[bytes, float], GatewayResult] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.discovery_profiles = {
             profile.request: profile for profile in discovery_profiles
         }
         self.fc20_cache = fc20_cache or OpaqueProtocolCache()
+        self.request_handler = request_handler
+        self.fc20_handler = fc20_handler
         self.mode = BrokerMode.SHINE_RECOVERING
 
     def handle_request(self, frame: bytes, *, now: float) -> GatewayResult:
@@ -506,6 +519,8 @@ class ShineVirtualInverterAdapter:
         if function in (0x06, 0x10):
             return GatewayResult("quarantined", "SHINE", reason="write_not_allowed")
         if function == 0x20:
+            if self.fc20_handler is not None:
+                return self.fc20_handler(frame, now)
             cached = self.fc20_cache.get(
                 frame, now=now, max_age=self.coordinator.max_age
             )
@@ -528,15 +543,14 @@ class ShineVirtualInverterAdapter:
             return GatewayResult(
                 "quarantined", "SHINE", reason="unprofiled_unit_zero_read"
             )
+        if self.request_handler is not None:
+            self.mode = BrokerMode.SHINE_PRESENT
+            return self.request_handler(frame, now)
         result = self.coordinator.request(
             ClientReadRequest("SHINE", function, key.start, key.count), now=now
         )
         if result.status == "served" and result.read is not None:
-            response_body = bytes([frame[0], function, key.count * 2])
-            response = add_crc(
-                response_body
-                + b"".join(word.to_bytes(2, "big") for word in result.read.words)
-            )
+            response = build_read_response(frame, result.read.words)
             return GatewayResult(
                 "served",
                 "SHINE",

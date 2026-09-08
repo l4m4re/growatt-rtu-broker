@@ -9,6 +9,7 @@ Growatt RTU Broker
 """
 
 from __future__ import annotations
+
 import argparse
 import atexit
 import datetime
@@ -19,10 +20,26 @@ import signal
 import socket
 import threading
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Optional, List
+from typing import List, Optional
+
 import serial
+
+from .cache_gateway import (
+    CachedRead,
+    GatewayResult,
+    OpaqueProtocolCache,
+    PollCoordinator,
+    RegisterCache,
+    RegisterKey,
+    RegisterSnapshot,
+    ShineVirtualInverterAdapter,
+    build_read_response,
+    min_6000tl_xh_discovery_profile,
+)
+from .cache_gateway import crc_ok as cache_crc_ok
 
 
 def modbus_crc(data: bytes) -> int:
@@ -63,10 +80,7 @@ def standard_response_spec(request: bytes) -> tuple[int, int, int] | None:
 
 def is_retryable_standard_read(request: bytes) -> bool:
     """Return whether a standard TCP request can be safely retried."""
-    return (
-        standard_response_spec(request) is not None
-        and request[1] in (0x03, 0x04)
-    )
+    return standard_response_spec(request) is not None and request[1] in (0x03, 0x04)
 
 
 def shine_policy_disposition(request: bytes, policy: str = "read-only") -> str:
@@ -104,10 +118,7 @@ def find_standard_response(buffer: bytes, request: bytes) -> bytes | None:
             continue
         if start + 5 <= len(buffer):
             candidate = buffer[start : start + 5]
-            if (
-                candidate[1] == (function | 0x80)
-                and crc_ok(candidate)
-            ):
+            if candidate[1] == (function | 0x80) and crc_ok(candidate):
                 return candidate
         if start + normal_length > len(buffer):
             continue
@@ -546,7 +557,12 @@ class Downstream:
     physical transaction is never preempted.
     """
 
-    _SOURCE_PRIORITIES = {"SHINE": 0, "PROD_TCP": 1, "DEV_TCP": 2}
+    _SOURCE_PRIORITIES = {
+        "SHINE": 0,
+        "PROD_TCP": 1,
+        "DEV_TCP": 2,
+        "BACKGROUND": 3,
+    }
 
     def __init__(
         self,
@@ -560,6 +576,9 @@ class Downstream:
         forensic: ForensicCapture | None = None,
         shine_burst: int = 8,
     ):
+        self.dev = dev
+        self.baud = baud
+        self.fmt = fmt
         databits = int(fmt[0])
         parity = fmt[1].upper()
         stop = int(fmt[2])
@@ -569,9 +588,15 @@ class Downstream:
             "O": serial.PARITY_ODD,
         }[parity]
         py_stp = {1: serial.STOPBITS_ONE, 2: serial.STOPBITS_TWO}[stop]
-        self.ser = serial.Serial(
-            dev, baud, bytesize=databits, parity=py_par, stopbits=py_stp, timeout=0
-        )
+        self._serial_kwargs = {
+            "bytesize": databits,
+            "parity": py_par,
+            "stopbits": py_stp,
+            "timeout": 0,
+        }
+        self._serial_paths = self._discover_serial_paths(dev)
+        self._active_serial_path = self._serial_paths[0]
+        self.ser = self._open_serial()
         bits_per_char = 1 + databits + stop + (0 if parity == "N" else 1)
         self.char_time = bits_per_char / baud
         self.forensic = forensic
@@ -588,11 +613,104 @@ class Downstream:
         self.min_cmd_period = float(min_cmd_period)
         self.rtimeout = float(rtimeout)
         self._last_done = 0.0
+        self._consecutive_timeouts = 0
+        self._reopen_after_timeouts = 2
         self.events = events
         self._scheduler = threading.Thread(
             target=self._run_scheduler, name="growatt-downstream", daemon=True
         )
         self._scheduler.start()
+
+    @staticmethod
+    def _discover_serial_paths(dev: str) -> tuple[str, ...]:
+        """Keep a stable udev alias when the caller supplied a tty node."""
+        if "/serial/by-" in dev:
+            return (dev,)
+        real_dev = os.path.realpath(dev)
+        aliases: list[str] = []
+        for directory in ("/dev/serial/by-id", "/dev/serial/by-path"):
+            try:
+                entries = sorted(Path(directory).iterdir())
+            except OSError:
+                continue
+            aliases.extend(
+                str(entry) for entry in entries if os.path.realpath(entry) == real_dev
+            )
+        return tuple(dict.fromkeys((*aliases, dev)))
+
+    def _open_serial(self) -> serial.Serial:
+        last_error: Exception | None = None
+        for path in self._serial_paths:
+            try:
+                ser = serial.Serial(path, self.baud, **self._serial_kwargs)
+            except (OSError, serial.SerialException) as exc:
+                last_error = exc
+                continue
+            self._active_serial_path = path
+            return ser
+        if last_error is not None:
+            raise last_error
+        raise OSError(f"no serial path available for {self.dev}")
+
+    def _reopen_serial(self, reason: str) -> bool:
+        """Reopen the stable device path after a disconnect or bad run."""
+        old = self.ser
+        self.ser = None
+        if old is not None:
+            try:
+                old.close()
+            except (OSError, serial.SerialException):
+                pass
+        self._capture_event(
+            "inverter_serial_reopen",
+            role="WARN",
+            reason=reason,
+            port=self._active_serial_path,
+            candidates=self._serial_paths,
+        )
+        for attempt in range(1, 4):
+            try:
+                self.ser = self._open_serial()
+            except (OSError, serial.SerialException) as exc:
+                self._capture_event(
+                    "inverter_open_failed",
+                    role="ERROR",
+                    port=self._active_serial_path,
+                    candidates=self._serial_paths,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                time.sleep(0.25 * attempt)
+                continue
+            self.framer.ser = self.ser
+            self.framer.buf.clear()
+            self.framer.last = time.perf_counter()
+            try:
+                self.ser.reset_input_buffer()
+                self.ser.reset_output_buffer()
+            except (OSError, serial.SerialException):
+                self._capture_event(
+                    "inverter_buffer_reset_failed",
+                    role="WARN",
+                    port=self._active_serial_path,
+                )
+            self._capture_event(
+                "inverter_serial_reopened",
+                role="INFO",
+                port=self._active_serial_path,
+                attempt=attempt,
+            )
+            return True
+        return False
+
+    def _capture_event(self, event: str, **fields: object) -> None:
+        if self.events:
+            self.events.emit(event=event, **fields)
+
+    def _ensure_serial(self) -> bool:
+        if self.ser is not None and self.ser.is_open:
+            return True
+        return self._reopen_serial("serial_not_open")
 
     def _capture_rx(self, data: bytes, source: str) -> None:
         if self.forensic:
@@ -608,6 +726,8 @@ class Downstream:
         """Record bytes already available without transmitting anything."""
         with self._io_lock:
             self._snapshot_buffer("post_test_framer_buffer")
+            if self.ser is None or not self.ser.is_open:
+                return
             count = self.ser.in_waiting
             if count:
                 data = self.ser.read(count)
@@ -686,6 +806,8 @@ class Downstream:
                         error=str(exc),
                     )
                 item.response = b""
+                with self._io_lock:
+                    self._reopen_serial("transaction_error")
             finally:
                 item.done.set()
 
@@ -723,10 +845,13 @@ class Downstream:
         resp = b""
         attempts = 2 if standard_modbus and is_retryable_standard_read(req) else 1
         for attempt in range(attempts):
+            if not self._ensure_serial():
+                break
             self._enforce_spacing()
             # Discard bytes that arrived before this request so they cannot be
             # attributed to the new request.
             self._snapshot_buffer("pre_request_framer_buffer")
+            assert self.ser is not None
             drained = self.ser.read(self.ser.in_waiting or 0)
             if drained:
                 self._capture_rx(drained, "pre_request_drain")
@@ -758,6 +883,13 @@ class Downstream:
             else:
                 self._snapshot_buffer("leftover_framer_buffer")
             self._last_done = time.perf_counter()
+            if resp:
+                self._consecutive_timeouts = 0
+            else:
+                self._consecutive_timeouts += 1
+                if self._consecutive_timeouts >= self._reopen_after_timeouts:
+                    self._consecutive_timeouts = 0
+                    self._reopen_serial("repeated_timeouts")
             if resp or attempt + 1 == attempts:
                 break
             if self.events:
@@ -789,6 +921,370 @@ class Downstream:
                 **parse_rtu(resp or b""),
             )
         return resp
+
+
+@dataclass(frozen=True)
+class CachePolicy:
+    key: RegisterKey
+    name: str
+    interval: float
+    max_age: float
+
+
+@dataclass
+class _RefreshState:
+    event: threading.Event
+    snapshot: RegisterSnapshot | None = None
+    error: str | None = None
+
+
+def native_min_6000tl_xh_plan() -> tuple[CachePolicy, ...]:
+    """Return only vendor-native blocks already validated for the live MIN."""
+    return (
+        CachePolicy(RegisterKey(3, 0, 125), "holding_0", 60.0, 90.0),
+        CachePolicy(RegisterKey(3, 180, 20), "holding_180", 60.0, 90.0),
+        CachePolicy(RegisterKey(3, 209, 15), "holding_209", 60.0, 90.0),
+        CachePolicy(RegisterKey(3, 3000, 125), "holding_3000", 15.0, 30.0),
+        CachePolicy(RegisterKey(4, 3000, 125), "input_3000", 15.0, 30.0),
+        CachePolicy(RegisterKey(4, 3125, 125), "input_3125", 15.0, 30.0),
+        CachePolicy(RegisterKey(4, 3250, 125), "input_3250", 120.0, 240.0),
+    )
+
+
+class CacheGatewayService:
+    """Serve TCP and Shine reads from one cache backed by ``Downstream``."""
+
+    _ON_DEMAND_MAX_AGE = 5.0
+    _WAIT_TIMEOUT = 8.0
+
+    def __init__(
+        self,
+        downstream: Downstream,
+        *,
+        events: EventHub | None = None,
+        policies: tuple[CachePolicy, ...] | None = None,
+    ) -> None:
+        self.downstream = downstream
+        self.events = events
+        self.cache = RegisterCache()
+        self.fc20_cache = OpaqueProtocolCache()
+        self.coordinator = PollCoordinator(self.cache, max_age=self._ON_DEMAND_MAX_AGE)
+        self.policies = policies or native_min_6000tl_xh_plan()
+        self._policy_by_key = {policy.key: policy for policy in self.policies}
+        self._lock = threading.Lock()
+        self._inflight: dict[RegisterKey, _RefreshState] = {}
+        self._stop = threading.Event()
+        self._poller = threading.Thread(
+            target=self._run_poller,
+            name="growatt-cache-poller",
+            daemon=True,
+        )
+
+    def _emit(self, event: str, **fields: object) -> None:
+        if self.events:
+            self.events.emit(event=event, **fields)
+
+    def start(self) -> None:
+        self._poller.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    @staticmethod
+    def _key_from_request(request: bytes) -> RegisterKey | None:
+        if len(request) != 8 or not cache_crc_ok(request):
+            return None
+        if request[1] not in (0x03, 0x04):
+            return None
+        return RegisterKey(
+            request[1],
+            int.from_bytes(request[2:4], "big"),
+            int.from_bytes(request[4:6], "big"),
+        )
+
+    def _policy_for(self, key: RegisterKey) -> CachePolicy | None:
+        for policy in self.policies:
+            if policy.key.contains(key):
+                return policy
+        return None
+
+    def _physical_key(self, key: RegisterKey) -> RegisterKey:
+        policy = self._policy_for(key)
+        return policy.key if policy is not None else key
+
+    def _max_age(self, key: RegisterKey) -> float:
+        policy = self._policy_for(key)
+        return policy.max_age if policy is not None else self._ON_DEMAND_MAX_AGE
+
+    def _wire_read_request(self, key: RegisterKey) -> bytes:
+        return add_crc(
+            bytes([1, key.function])
+            + key.start.to_bytes(2, "big")
+            + key.count.to_bytes(2, "big")
+        )
+
+    @staticmethod
+    def _decode_read_response(request: bytes, response: bytes) -> tuple[int, ...]:
+        key = CacheGatewayService._key_from_request(request)
+        if key is None:
+            raise ValueError("invalid physical read request")
+        if not cache_crc_ok(response):
+            raise ValueError("physical response CRC invalid")
+        if response[0] != request[0] or response[1] != request[1]:
+            raise ValueError("physical response does not match request")
+        if len(response) != 5 + key.count * 2 or response[2] != key.count * 2:
+            raise ValueError("physical response length does not match request")
+        return tuple(
+            int.from_bytes(response[offset : offset + 2], "big")
+            for offset in range(3, 3 + key.count * 2, 2)
+        )
+
+    def _refresh(
+        self,
+        key: RegisterKey,
+        *,
+        client: str,
+        source: str,
+        reason: str,
+    ) -> RegisterSnapshot | None:
+        request = self._wire_read_request(key)
+        started = time.monotonic()
+        self._emit(
+            "cache_physical_refresh_start",
+            role="INFO",
+            client=client,
+            source=source,
+            reason=reason,
+            function=key.function,
+            start=key.start,
+            count=key.count,
+        )
+        response = self.downstream.transact(
+            request,
+            client=client,
+            source=source,
+            standard_modbus=True,
+        )
+        if not response:
+            raise TimeoutError("physical read timeout")
+        words = self._decode_read_response(request, response)
+        captured_at = time.monotonic()
+        with self._lock:
+            snapshot = self.cache.put_block(
+                key,
+                words,
+                captured_at=captured_at,
+                source_transaction=f"{source}:{key.function:02x}:{key.start}:{key.count}",
+            )
+        self._emit(
+            "cache_physical_refresh_complete",
+            role="INFO",
+            client=client,
+            source=source,
+            function=key.function,
+            start=key.start,
+            count=key.count,
+            generation=snapshot.generation,
+            snapshot_id=snapshot.snapshot_id,
+            duration_ms=round((time.monotonic() - started) * 1000, 3),
+        )
+        return snapshot
+
+    def _read_words(
+        self,
+        key: RegisterKey,
+        *,
+        client: str,
+        source: str,
+        now: float,
+    ) -> tuple[CachedRead | None, str | None]:
+        max_age = self._max_age(key)
+        with self._lock:
+            cached = self.cache.read(key, now=now, max_age=max_age)
+        if cached is not None:
+            self._emit(
+                "cache_hit",
+                role="INFO",
+                client=client,
+                source=source,
+                function=key.function,
+                start=key.start,
+                count=key.count,
+                age_ms=round(cached.age * 1000, 3),
+                generation=cached.generation,
+                snapshot_id=cached.snapshot_ids,
+            )
+            return cached, None
+
+        physical_key = self._physical_key(key)
+        self._emit(
+            "cache_miss",
+            role="INFO",
+            client=client,
+            source=source,
+            function=key.function,
+            start=key.start,
+            count=key.count,
+            physical_start=physical_key.start,
+            physical_count=physical_key.count,
+        )
+        with self._lock:
+            state = self._inflight.get(physical_key)
+            owner = state is None
+            if owner:
+                state = _RefreshState(threading.Event())
+                self._inflight[physical_key] = state
+            else:
+                self._emit(
+                    "cache_coalesced",
+                    role="INFO",
+                    client=client,
+                    source=source,
+                    function=key.function,
+                    start=key.start,
+                    count=key.count,
+                )
+
+        if owner:
+            try:
+                state.snapshot = self._refresh(
+                    physical_key,
+                    client=client,
+                    source=source,
+                    reason="cache_miss_or_stale",
+                )
+            except Exception as exc:
+                state.error = str(exc)
+                self._emit(
+                    "cache_physical_refresh_failed",
+                    role="ERROR",
+                    client=client,
+                    source=source,
+                    function=physical_key.function,
+                    start=physical_key.start,
+                    count=physical_key.count,
+                    error=state.error,
+                )
+            finally:
+                with self._lock:
+                    self._inflight.pop(physical_key, None)
+                    state.event.set()
+        elif not state.event.wait(self._WAIT_TIMEOUT):
+            return None, "cache refresh wait timeout"
+
+        if state.error:
+            return None, state.error
+        with self._lock:
+            cached = self.cache.read(key, now=time.monotonic(), max_age=max_age)
+        if cached is None:
+            return None, "refresh did not produce a usable snapshot"
+        return cached, None
+
+    def handle_standard_request(
+        self,
+        request: bytes,
+        *,
+        client: str,
+        source: str,
+        now: float | None = None,
+    ) -> GatewayResult:
+        key = self._key_from_request(request)
+        if key is None or not 1 <= key.count <= 125:
+            return GatewayResult("failed", client, reason="invalid_standard_read")
+        cached, error = self._read_words(
+            key,
+            client=client,
+            source=source,
+            now=time.monotonic() if now is None else now,
+        )
+        if cached is None:
+            return GatewayResult("failed", client, reason=error or "read failed")
+        return GatewayResult(
+            "served",
+            client,
+            read=cached,
+            response=build_read_response(request, cached.words),
+            reason="cache",
+        )
+
+    def handle_fc20(
+        self,
+        request: bytes,
+        *,
+        client: str,
+        source: str,
+        now: float | None = None,
+    ) -> GatewayResult:
+        now = time.monotonic() if now is None else now
+        if request != bytes.fromhex("01200000006481e6"):
+            return GatewayResult("quarantined", client, reason="unprofiled_fc20")
+        cached = self.fc20_cache.get(request, now=now, max_age=self._ON_DEMAND_MAX_AGE)
+        if cached is not None:
+            self._emit(
+                "fc20_cache_hit",
+                role="INFO",
+                client=client,
+                source=source,
+                age_ms=round((now - cached.captured_at) * 1000, 3),
+                generation=cached.generation,
+            )
+            return GatewayResult(
+                "served", client, response=cached.response, reason="fc20_cache"
+            )
+
+        response = self.downstream.transact(
+            request,
+            client=client,
+            source=source,
+            standard_modbus=False,
+        )
+        if (
+            not response
+            or not cache_crc_ok(response)
+            or len(response) < 2
+            or response[0] != request[0]
+            or response[1] != 0x20
+        ):
+            self._emit(
+                "fc20_refresh_failed",
+                role="ERROR",
+                client=client,
+                source=source,
+            )
+            return GatewayResult("failed", client, reason="fc20 refresh failed")
+        if len(response) != 205 or response[2] != 200:
+            return GatewayResult("failed", client, reason="invalid fc20 response shape")
+        cached = self.fc20_cache.put(request, response, captured_at=now)
+        self._emit(
+            "fc20_refresh",
+            role="INFO",
+            client=client,
+            source=source,
+            age_ms=round((now - cached.captured_at) * 1000, 3),
+            generation=cached.generation,
+        )
+        return GatewayResult("served", client, response=response, reason="fc20_fresh")
+
+    def _run_poller(self) -> None:
+        while not self._stop.is_set():
+            for policy in self.policies:
+                if self._stop.is_set():
+                    return
+                now = time.monotonic()
+                with self._lock:
+                    cached = self.cache.read(
+                        policy.key, now=now, max_age=policy.max_age
+                    )
+                due = cached is None or cached.age >= policy.interval
+                if due:
+                    self._read_words(
+                        policy.key,
+                        client="PREFETCH",
+                        source="BACKGROUND",
+                        now=now,
+                    )
+                if self._stop.wait(0.02):
+                    return
 
 
 class RawSerialBridge(threading.Thread):
@@ -903,9 +1399,7 @@ class RawSerialBridge(threading.Thread):
         if self._shine is not None or now < self._next_shine_open:
             return
         try:
-            self._shine = self._open(
-                self.shine_dev, self.shine_baud, self.shine_fmt
-            )
+            self._shine = self._open(self.shine_dev, self.shine_baud, self.shine_fmt)
         except (serial.SerialException, OSError, ValueError) as exc:
             self._next_shine_open = now + 5.0
             if self.events:
@@ -1011,6 +1505,7 @@ class ShineEndpoint(threading.Thread):
         events: Optional[EventHub] = None,
         forensic: ForensicCapture | None = None,
         policy: str = "read-only",
+        virtual_adapter: ShineVirtualInverterAdapter | None = None,
     ):
         super().__init__(daemon=True)
         self.dev = dev
@@ -1020,6 +1515,7 @@ class ShineEndpoint(threading.Thread):
         self.events = events
         self.forensic = forensic
         self.policy = policy
+        self.virtual_adapter = virtual_adapter
         self.ser: Optional[serial.Serial] = None
         self.framer: Optional[RTUFramer] = None
         self._online = False
@@ -1045,6 +1541,8 @@ class ShineEndpoint(threading.Thread):
         bits_per_char = 1 + databits + stop + (0 if parity == "N" else 1)
         self.framer = RTUFramer(self.ser, bits_per_char / self.baud)
         self._online = True
+        if self.virtual_adapter is not None:
+            self.virtual_adapter.observe_hotplug()
         if self.events:
             self.events.emit(
                 event="shine_online",
@@ -1065,11 +1563,17 @@ class ShineEndpoint(threading.Thread):
         self.framer = None
         if self._online and self.events:
             self.events.emit(event="shine_offline", role="SYS", port=self.dev)
+        if self.virtual_adapter is not None:
+            self.virtual_adapter.observe_disconnect()
         self._online = False
         # Logging is handled via EventHub/WireLogger; no direct stdout prints here
 
     def run(self):
         while True:
+            if self.ser is not None and not os.path.exists(self.dev):
+                self._close_port()
+                time.sleep(1.0)
+                continue
             if not self.ser or not self.framer:
                 try:
                     self._open_port()
@@ -1127,7 +1631,26 @@ class ShineEndpoint(threading.Thread):
                         **parse_rtu(req),
                     )
 
-                if disposition != "forwarded":
+                if self.virtual_adapter is not None:
+                    result = self.virtual_adapter.handle_request(
+                        req, now=time.monotonic()
+                    )
+                    resp = result.response or b""
+                    if result.status == "quarantined" and not resp:
+                        resp = add_crc(bytes([req[0], function | 0x80, 0x01]))
+                    if result.status == "failed" and not resp:
+                        resp = add_crc(bytes([req[0], function | 0x80, 0x0B]))
+                    if self.events:
+                        self.events.emit(
+                            event="shine_virtual_result",
+                            role="INFO" if result.status == "served" else "WARN",
+                            source="SHINE",
+                            from_client="SHINE",
+                            status=result.status,
+                            reason=result.reason,
+                            **parse_rtu(req),
+                        )
+                elif disposition != "forwarded":
                     resp = add_crc(bytes([req[0], function | 0x80, 0x01]))
                     if self.events:
                         self.events.emit(
@@ -1221,12 +1744,14 @@ class TCPServer(threading.Thread):
         downstream: Downstream,
         events: EventHub | None = None,
         source: str = "PROD_TCP",
+        gateway: CacheGatewayService | None = None,
     ):
         super().__init__(daemon=True)
         self.addr = (bind_host, bind_port)
         self.ds = downstream
         self.events = events
         self.source = source
+        self.gateway = gateway
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(self.addr)
@@ -1276,12 +1801,28 @@ class TCPServer(threading.Thread):
                         )
                     continue
                 rtu_req = add_crc(bytes([uid]) + pdu)
-                rtu_resp = self.ds.transact(
-                    rtu_req,
-                    client=peer,
-                    source=self.source,
-                    standard_modbus=True,
-                )
+                if self.gateway is not None:
+                    result = self.gateway.handle_standard_request(
+                        rtu_req,
+                        client=peer,
+                        source=self.source,
+                    )
+                    rtu_resp = result.response or b""
+                    if result.status != "served" and self.events:
+                        self.events.emit(
+                            event="tcp_gateway_failure",
+                            role="WARN",
+                            source=self.source,
+                            from_client=peer,
+                            reason=result.reason,
+                        )
+                else:
+                    rtu_resp = self.ds.transact(
+                        rtu_req,
+                        client=peer,
+                        source=self.source,
+                        standard_modbus=True,
+                    )
                 if not rtu_resp or len(rtu_resp) < 4 or not crc_ok(rtu_resp):
                     break
                 uid2 = rtu_resp[0]
@@ -1342,6 +1883,12 @@ def main():
         help="Shine policy; raw-transparent forwards every serial byte",
     )
     ap.add_argument(
+        "--mode",
+        choices=("legacy", "cache", "cache+shine"),
+        default="legacy",
+        help="Broker data-plane mode; cache modes are opt-in",
+    )
+    ap.add_argument(
         "--baud", type=int, default=9600, help="Default baud if side-specific not set"
     )
     ap.add_argument(
@@ -1398,6 +1945,11 @@ def main():
     )
     args = ap.parse_args()
 
+    if args.mode == "cache+shine" and not args.shine:
+        ap.error("cache+shine mode requires --shine")
+    if args.mode != "legacy" and args.shine_policy == "raw-transparent":
+        ap.error("raw-transparent Shine mode is only available in legacy mode")
+
     inv_baud = args.inv_baud or args.baud
     inv_bytes = args.inv_bytes or args.bytes
     sh_baud = args.shine_baud or args.baud
@@ -1435,6 +1987,8 @@ def main():
         )
 
     ds = None
+    gateway = None
+    virtual_adapter = None
     shine = None
     raw_shine = None
     if args.shine and args.shine_policy == "raw-transparent":
@@ -1460,6 +2014,27 @@ def main():
             forensic=forensic,
             shine_burst=args.shine_burst,
         )
+        if args.mode != "legacy":
+            gateway = CacheGatewayService(ds, events=events)
+            gateway.start()
+            if args.mode == "cache+shine":
+                virtual_adapter = ShineVirtualInverterAdapter(
+                    gateway.coordinator,
+                    discovery_profiles=(min_6000tl_xh_discovery_profile(),),
+                    fc20_cache=gateway.fc20_cache,
+                    request_handler=lambda frame, now: gateway.handle_standard_request(
+                        frame,
+                        client="SHINE",
+                        source="SHINE",
+                        now=now,
+                    ),
+                    fc20_handler=lambda frame, now: gateway.handle_fc20(
+                        frame,
+                        client="SHINE",
+                        source="SHINE",
+                        now=now,
+                    ),
+                )
     if args.shine and raw_shine is None:
         shine = ShineEndpoint(
             args.shine,
@@ -1469,6 +2044,7 @@ def main():
             events=events,
             forensic=forensic,
             policy=args.shine_policy,
+            virtual_adapter=virtual_adapter,
         )
         shine.start()
 
@@ -1493,6 +2069,7 @@ def main():
             ds,
             events=events,
             source="PROD_TCP" if index == 0 else "DEV_TCP",
+            gateway=gateway,
         )
         server.start()
         servers.append(server)
@@ -1504,6 +2081,7 @@ def main():
     parts = [
         f"INV={args.inverter}@{inv_baud}/{inv_bytes}",
         f"SHINE={args.shine}@{sh_baud}/{sh_bytes}",
+        f"MODE={args.mode}",
         f"TCP={','.join(tcp_desc)}",
     ]
     if raw_shine is not None:

@@ -13,43 +13,45 @@ fi
 
 DOCKER_ARGS=(--name growatt-broker --restart unless-stopped)
 
-# Add device mounts only if the paths exist. If a requested device path is missing,
-# fall back to starting the container in privileged mode and bind-mounting /dev so
-# hot-plugged devices become visible inside the container. This preserves the
-# "start now, plug later" workflow while warning about the elevated privileges.
+# A mounted /dev is required when a USB adapter may disappear and re-enumerate
+# while this container stays alive. Use stable /dev/serial/by-id paths in .env.
+HOTPLUG_DEVICES="${HOTPLUG_DEVICES:-1}"
+INVERTER_ARG=/dev/inverter
+SHINE_ARG=/dev/shine
+
+if [ "${HOTPLUG_DEVICES}" = "1" ]; then
+  echo "Info: enabling USB hot-plug recovery by mounting /dev"
+  DOCKER_ARGS+=(--privileged -v /dev:/dev)
+  INVERTER_ARG="${INV_DEV:-/dev/serial/by-id/inverter}"
+  SHINE_ARG="${SHINE_DEV:-/dev/serial/by-id/shine}"
+fi
+
+# With hot-plug mode disabled, retain the older explicit-device deployment.
+# When a requested device is missing, use the same full-/dev fallback so a later
+# plug-in is visible to the broker.
 MISSING_DEVICE=0
-if [ -n "${INV_DEV:-}" ] && [ -e "${INV_DEV}" ]; then
-  DOCKER_ARGS+=(--device="${INV_DEV}:/dev/inverter:rw")
-else
-  echo "Warning: inverter device '${INV_DEV:-}' not present; container will start without explicit device binding"
-  MISSING_DEVICE=1
+if [ "${HOTPLUG_DEVICES}" != "1" ]; then
+  if [ -n "${INV_DEV:-}" ] && [ -e "${INV_DEV}" ]; then
+    DOCKER_ARGS+=(--device="${INV_DEV}:/dev/inverter:rw")
+  else
+    echo "Warning: inverter device '${INV_DEV:-}' not present; container will start without explicit device binding"
+    MISSING_DEVICE=1
+  fi
+
+  if [ -n "${SHINE_DEV:-}" ] && [ -e "${SHINE_DEV}" ]; then
+    DOCKER_ARGS+=(--device="${SHINE_DEV}:/dev/shine:rw")
+  else
+    echo "Info: shine device '${SHINE_DEV:-}' not present; broker can be started hot-pluggable"
+    MISSING_DEVICE=1
+  fi
 fi
 
-if [ -n "${SHINE_DEV:-}" ] && [ -e "${SHINE_DEV}" ]; then
-  DOCKER_ARGS+=(--device="${SHINE_DEV}:/dev/shine:rw")
-else
-  echo "Info: shine device '${SHINE_DEV:-}' not present; broker can be started hot-pluggable"
-  MISSING_DEVICE=1
-fi
-
-if [ "${MISSING_DEVICE}" -eq 1 ]; then
+if [ "${MISSING_DEVICE}" -eq 1 ] && [ "${HOTPLUG_DEVICES}" != "1" ]; then
   echo "Info: one or more requested devices missing. Starting container in hot-plug mode"
-  echo "      (bind-mounting /dev/serial and any existing /dev/ttyUSB* devices)."
-  echo "      This is a limited fallback compared to mounting /dev entirely. It still"
-  echo "      grants broader access to those device nodes; prefer explicit --device flags"
-  echo "      when possible."
-  # Bind the serial-by-id tree so newly-created by-id nodes appear inside container
-  DOCKER_ARGS+=(-v /dev/serial:/dev/serial -v /dev/serial/by-id:/dev/serial/by-id)
-
-  # If any /dev/ttyUSB* exist right now, bind-mount them explicitly so tools
-  # that reference /dev/ttyUSB* will also work. New ttyUSB devices created after
-  # container start will still be visible via /dev/serial/by-id.
-  for f in /dev/ttyUSB*; do
-    if [ -e "$f" ]; then
-      echo "Info: binding existing device $f into container"
-      DOCKER_ARGS+=(-v "$f":"$f")
-    fi
-  done
+  echo "      (bind-mounting /dev; use stable /dev/serial/by-id paths)."
+  DOCKER_ARGS+=(--privileged -v /dev:/dev)
+  INVERTER_ARG="${INV_DEV:-/dev/serial/by-id/inverter}"
+  SHINE_ARG="${SHINE_DEV:-/dev/serial/by-id/shine}"
 fi
 
 # Port mappings
@@ -78,10 +80,11 @@ fi
 
 # Build the full docker run command (for visibility)
 DOCKER_CMD=(docker run -d "${DOCKER_ARGS[@]}" growatt-rtu-broker:local \
-  growatt-broker --inverter /dev/inverter --shine /dev/shine \
+  growatt-broker --inverter "${INVERTER_ARG}" --shine "${SHINE_ARG}" \
     --baud "${INV_BAUD:-${BAUD:-115200}}" --bytes "${INV_BYTES:-${BYTES:-8N1}}" \
     --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
-    --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" --log "${LOG_PATH:--}")
+    --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" --log "${LOG_PATH:--}" \
+    --mode "${BROKER_MODE:-legacy}")
 
 echo "Prepared docker run command:"
 printf ' %s' "${DOCKER_CMD[@]}"

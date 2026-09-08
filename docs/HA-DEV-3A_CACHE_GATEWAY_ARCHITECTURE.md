@@ -1,6 +1,6 @@
 # HA-DEV-3A cache-centric Growatt broker architecture
 
-Status: research prototype; not enabled in the production broker.
+Status: opt-in implementation; production remains on the legacy default.
 
 ## Decision
 
@@ -11,10 +11,9 @@ The Shine serial connection becomes a virtual-inverter client interface. Its
 discovery request is terminated locally for a validated device profile, and
 normal reads are answered from the same register cache used by HA.
 
-The implementation in `growatt_broker/cache_gateway.py` is deliberately not
-imported by `broker.py` and has
-`CACHE_GATEWAY_DEFAULT_ENABLED = False`. No production mode changed in this
-task.
+The cache implementation is enabled only with `--mode cache` or
+`--mode cache+shine`. The default remains `--mode legacy`, so no production
+mode changes merely by upgrading the image.
 
 ## Evidence from HA-DEV-2C/2D/2E
 
@@ -98,6 +97,24 @@ as fresh data. A request contained in one fresh block is sliced locally. A
 range crossing blocks is composed only when every piece is fresh and all
 pieces share the same `snapshot_id`; otherwise a refresh is required. This
 prevents silently combining unrelated generations.
+
+The live implementation polls the validated native MIN/TL-XH blocks as
+background work and serves contained TCP or virtual-Shine reads by slicing
+those snapshots. The current plan is exposed by
+`native_min_6000tl_xh_plan()`; it intentionally does not turn unused words
+into entities or issue one physical transaction per entity.
+
+The cache mode can be exercised with:
+
+```text
+--mode cache
+--mode cache+shine --shine /dev/serial/by-id/<shine-port>
+```
+
+`cache+shine` terminates the validated unit-0 discovery request locally,
+answers standard reads from the shared cache, replays a validated FC20 object
+from the same service, and quarantines writes. Legacy and raw-transparent
+modes retain their existing behavior.
 
 ## Native block polling
 

@@ -86,6 +86,7 @@ async def test_downstream_timeout_logged(tmp_path):
                 except Exception:
                     # Expected: pymodbus raises when no response
                     pass
+                await _wait_for_line(proc.stdout, "inverter_serial_reopen", timeout=3)
                 # Now verify the broker logged the downstream timeout
                 await _wait_for_line(proc.stdout, "downstream_timeout", timeout=3)
             finally:

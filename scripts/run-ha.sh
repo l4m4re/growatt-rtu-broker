@@ -17,13 +17,14 @@ else
 fi
 
 : "${INV_DEV:?Set INV_DEV in .env}"
-: "${SHINE_DEV:?Set SHINE_DEV in .env}"
+: "${SHINE_DEV:=/dev/serial/by-id/shine}"
+HOTPLUG_DEVICES="${HOTPLUG_DEVICES:-1}"
 
 echo "Checking devices:"
 ls -l "$INV_DEV" || true
 ls -l "$SHINE_DEV" || true
 
-# Resolve to concrete device nodes (e.g. /dev/ttyUSB0)
+# Resolve to concrete device nodes for the explicit-device deployment.
 INV_DEV_NODE=$(readlink -f "$INV_DEV" || echo "")
 SHINE_DEV_NODE=$(readlink -f "$SHINE_DEV" || echo "")
 if [ -z "$INV_DEV_NODE" ] || [ ! -e "$INV_DEV_NODE" ]; then
@@ -42,28 +43,40 @@ docker build -t "$IMAGE_TAG" .
 echo "(Re)starting container growatt-rtu-broker ..."
 docker rm -f growatt-rtu-broker >/dev/null 2>&1 || true
 
-docker run -d \
-  --name growatt-rtu-broker \
-  --restart unless-stopped \
-  --network host \
-  --privileged \
-  -v /var/log:/var/log \
-  -v /dev/serial/by-path:/dev/serial/by-path \
-  --device "$INV_DEV_NODE":"$INV_DEV_NODE" \
-  --device "$SHINE_DEV_NODE":"$SHINE_DEV_NODE" \
-  "$IMAGE_TAG" \
-  growatt-broker \
-  --inverter "${INV_DEV}" \
-  --shine "${SHINE_DEV}" \
-  --baud "${BAUD:-9600}" \
-  --bytes "${BYTES:-8E1}" \
-  ${INV_BAUD:+--inv-baud "$INV_BAUD"} \
-  ${INV_BYTES:+--inv-bytes "$INV_BYTES"} \
-  ${SHINE_BAUD:+--shine-baud "$SHINE_BAUD"} \
-  ${SHINE_BYTES:+--shine-bytes "$SHINE_BYTES"} \
-  --tcp "${TCP_BIND:-0.0.0.0:5020}" \
-  --min-period "${MIN_PERIOD:-1.0}" \
-  --rtimeout "${RTIMEOUT:-1.5}" \
+DOCKER_ARGS=(
+  run -d
+  --name growatt-rtu-broker
+  --restart unless-stopped
+  --network host
+  --privileged
+  -v /var/log:/var/log
+)
+if [ "${HOTPLUG_DEVICES}" = "1" ]; then
+  DOCKER_ARGS+=(-v /dev:/dev)
+  INV_ARG="${INV_DEV}"
+  SHINE_ARG="${SHINE_DEV}"
+else
+  DOCKER_ARGS+=(--device "${INV_DEV_NODE}:${INV_DEV_NODE}" --device "${SHINE_DEV_NODE}:${SHINE_DEV_NODE}")
+  INV_ARG=/dev/inverter
+  SHINE_ARG=/dev/shine
+fi
+
+DOCKER_ARGS+=("${IMAGE_TAG}"
+  growatt-broker
+  --inverter "${INV_ARG}"
+  --shine "${SHINE_ARG}"
+  --baud "${BAUD:-9600}"
+  --bytes "${BYTES:-8E1}"
+  --tcp "${TCP_BIND:-0.0.0.0:5020}"
+  --min-period "${MIN_PERIOD:-1.0}"
+  --rtimeout "${RTIMEOUT:-1.5}"
   --log "${LOG_PATH:-/var/log/growatt_broker.jsonl}"
+  --mode "${BROKER_MODE:-legacy}")
+if [ -n "${INV_BAUD:-}" ]; then DOCKER_ARGS+=(--inv-baud "${INV_BAUD}"); fi
+if [ -n "${INV_BYTES:-}" ]; then DOCKER_ARGS+=(--inv-bytes "${INV_BYTES}"); fi
+if [ -n "${SHINE_BAUD:-}" ]; then DOCKER_ARGS+=(--shine-baud "${SHINE_BAUD}"); fi
+if [ -n "${SHINE_BYTES:-}" ]; then DOCKER_ARGS+=(--shine-bytes "${SHINE_BYTES}"); fi
+
+docker "${DOCKER_ARGS[@]}"
 
 echo "Container started. Tail logs with: docker logs -f growatt-rtu-broker"

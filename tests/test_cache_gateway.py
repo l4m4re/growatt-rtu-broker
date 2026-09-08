@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from growatt_broker.broker import CacheGatewayService
 from growatt_broker.cache_gateway import (
     CACHE_GATEWAY_DEFAULT_ENABLED,
     BrokerMode,
@@ -264,3 +265,63 @@ def test_unknown_shine_function_is_quarantined_by_default() -> None:
 
 def test_cache_gateway_is_explicitly_non_default() -> None:
     assert CACHE_GATEWAY_DEFAULT_ENABLED is False
+
+
+class _FakeDownstream:
+    def __init__(self) -> None:
+        self.requests: list[bytes] = []
+
+    def transact(self, request: bytes, **_kwargs: object) -> bytes:
+        self.requests.append(request)
+        function = request[1]
+        start = int.from_bytes(request[2:4], "big")
+        count = int.from_bytes(request[4:6], "big")
+        words = [(start + offset) & 0xFFFF for offset in range(count)]
+        return add_crc(
+            bytes([request[0], function, count * 2])
+            + b"".join(word.to_bytes(2, "big") for word in words)
+        )
+
+
+def test_gateway_reads_from_one_native_block_and_replays_subsets() -> None:
+    downstream = _FakeDownstream()
+    gateway = CacheGatewayService(downstream)
+    first = add_crc(bytes.fromhex("01040bb80001"))
+    second = add_crc(bytes.fromhex("01040bcc0001"))
+
+    first_result = gateway.handle_standard_request(
+        first, client="HA", source="PROD_TCP"
+    )
+    second_result = gateway.handle_standard_request(
+        second, client="DEV", source="DEV_TCP"
+    )
+
+    assert first_result.status == "served"
+    assert second_result.status == "served"
+    assert first_result.read is not None
+    assert second_result.read is not None
+    assert first_result.read.words == (3000,)
+    assert second_result.read.words == (3020,)
+    assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
+
+
+def test_gateway_fc20_is_fetched_once_then_replayed() -> None:
+    downstream = _FakeDownstream()
+    request = bytes.fromhex("01200000006481e6")
+    response = add_crc(bytes([1, 0x20, 200]) + bytes(range(200)))
+
+    def transact(request: bytes, **_kwargs: object) -> bytes:
+        downstream.requests.append(request)
+        return response
+
+    downstream.transact = transact  # type: ignore[method-assign]
+    gateway = CacheGatewayService(downstream)
+
+    first = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=10.0)
+    second = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=10.5)
+
+    assert first.status == "served"
+    assert second.status == "served"
+    assert first.response == response
+    assert second.response == response
+    assert downstream.requests == [request]
