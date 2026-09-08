@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+from growatt_broker.cache_gateway import (
+    CACHE_GATEWAY_DEFAULT_ENABLED,
+    BrokerMode,
+    ClientReadRequest,
+    OpaqueProtocolCache,
+    PatternKey,
+    PollCoordinator,
+    RegisterCache,
+    RegisterKey,
+    ShinePatternObserver,
+    ShineVirtualInverterAdapter,
+    add_crc,
+    min_6000tl_xh_discovery_profile,
+)
+
+
+def _coordinator(max_age: float = 5.0) -> tuple[RegisterCache, PollCoordinator]:
+    cache = RegisterCache()
+    return cache, PollCoordinator(cache, max_age=max_age)
+
+
+def _adapter() -> ShineVirtualInverterAdapter:
+    _, coordinator = _coordinator()
+    return ShineVirtualInverterAdapter(
+        coordinator,
+        discovery_profiles=(min_6000tl_xh_discovery_profile(),),
+    )
+
+
+def test_exact_device_scoped_discovery_generates_expected_response() -> None:
+    profile = min_6000tl_xh_discovery_profile()
+    result = _adapter().handle_request(profile.request, now=0.0)
+
+    assert result.status == "discovery"
+    assert result.response == profile.response
+    assert result.reason == profile.device_id
+
+
+def test_unrelated_unit_zero_request_is_not_answered_as_discovery() -> None:
+    request = add_crc(bytes.fromhex("0003002c0001"))
+
+    result = _adapter().handle_request(request, now=0.0)
+
+    assert result.status == "quarantined"
+    assert result.response is None
+    assert result.reason == "unprofiled_unit_zero_read"
+
+
+def test_fresh_cache_serves_three_clients_without_physical_poll() -> None:
+    cache, coordinator = _coordinator()
+    cache.put_block(
+        RegisterKey(4, 3000, 125),
+        range(125),
+        captured_at=10.0,
+        source_transaction="fc04-3000",
+    )
+
+    results = tuple(
+        coordinator.request(
+            ClientReadRequest(client, 4, 3000, 20),
+            now=10.5,
+        )
+        for client in ("SHINE", "HA", "DEV")
+    )
+
+    assert [result.status for result in results] == ["served"] * 3
+    assert coordinator.issued_requests == []
+
+
+def test_overlapping_subset_is_served_from_larger_coherent_block() -> None:
+    cache, coordinator = _coordinator()
+    cache.put_block(
+        RegisterKey(4, 3000, 125),
+        range(125),
+        captured_at=20.0,
+        source_transaction="fc04-3000",
+        snapshot_id="snapshot-1",
+    )
+
+    result = coordinator.request(
+        ClientReadRequest("DEV", 4, 3020, 20),
+        now=20.1,
+    )
+
+    assert result.status == "served"
+    assert result.read is not None
+    assert result.read.words == tuple(range(20, 40))
+    assert result.read.snapshot_ids == ("snapshot-1",)
+
+
+def test_stale_cache_creates_one_shared_refresh() -> None:
+    cache, coordinator = _coordinator(max_age=5.0)
+    cache.put_block(
+        RegisterKey(4, 3000, 125),
+        range(125),
+        captured_at=0.0,
+        source_transaction="old",
+    )
+    demand = ClientReadRequest("HA", 4, 3000, 20)
+
+    first = coordinator.request(demand, now=10.0)
+    second = coordinator.request(
+        ClientReadRequest("DEV", 4, 3000, 20),
+        now=10.0,
+    )
+
+    assert first.status == "pending"
+    assert second.status == "pending"
+    assert first.physical_request == second.physical_request
+    assert len(coordinator.issued_requests) == 1
+
+
+def test_duplicate_simultaneous_demand_is_coalesced() -> None:
+    _, coordinator = _coordinator()
+    demand = ClientReadRequest("HA", 3, 0, 125)
+
+    first = coordinator.request(demand, now=0.0)
+    second = coordinator.request(demand, now=0.0)
+
+    assert first.physical_request == second.physical_request
+    assert len(coordinator.issued_requests) == 1
+
+
+def test_refresh_failure_does_not_masquerade_as_fresh_data() -> None:
+    cache, coordinator = _coordinator()
+    demand = ClientReadRequest("HA", 4, 3000, 125)
+    pending = coordinator.request(demand, now=100.0)
+    assert pending.physical_request is not None
+
+    failed = coordinator.fail(pending.physical_request, reason="timeout")
+    retry = coordinator.request(demand, now=100.1)
+
+    assert failed[0].status == "failed"
+    assert failed[0].reason == "timeout"
+    assert retry.status == "pending"
+    assert len(coordinator.issued_requests) == 2
+    assert cache.read(demand.key, now=100.1, max_age=5.0) is None
+
+
+def test_snapshot_generation_and_cross_block_coherence_are_deterministic() -> None:
+    cache = RegisterCache()
+    first = cache.put_block(
+        RegisterKey(4, 3000, 125),
+        range(125),
+        captured_at=1.0,
+        source_transaction="first",
+        snapshot_id="batch-1",
+    )
+    second = cache.put_block(
+        RegisterKey(4, 3125, 125),
+        range(125, 250),
+        captured_at=1.1,
+        source_transaction="second",
+        snapshot_id="batch-1",
+    )
+    composed = cache.read(
+        RegisterKey(4, 3100, 50),
+        now=2.0,
+        max_age=5.0,
+        allow_composed=True,
+    )
+
+    assert (first.generation, second.generation) == (1, 2)
+    assert composed is not None
+    assert composed.snapshot_ids == ("batch-1",)
+    assert composed.words == tuple(range(100, 150))
+
+
+def test_shine_presence_changes_schedule_mode_not_physical_owner() -> None:
+    adapter = _adapter()
+    profile = min_6000tl_xh_discovery_profile()
+
+    adapter.observe_hotplug()
+    adapter.handle_request(profile.request, now=0.0)
+    adapter.observe_disconnect()
+
+    assert adapter.mode == BrokerMode.SHINE_LOST
+    assert adapter.coordinator is not None
+    assert not hasattr(adapter, "physical_inverter")
+
+
+def test_pattern_observer_predicts_with_timing_jitter() -> None:
+    first = PatternKey(4, 3000, 125)
+    second = PatternKey(3, 180, 20)
+    observer = ShinePatternObserver(jitter_tolerance=0.2)
+    for key, at in (
+        (first, 0.0),
+        (second, 1.0),
+        (first, 2.1),
+        (second, 3.0),
+        (first, 4.0),
+    ):
+        observer.observe(key, at=at)
+
+    prediction = observer.predict(now=4.85, lead=0.2)
+
+    assert observer.learned_sequence == (first, second)
+    assert prediction is not None
+    assert prediction.key == second
+
+
+def test_pattern_observer_falls_back_after_sequence_change() -> None:
+    first = PatternKey(4, 3000, 125)
+    second = PatternKey(3, 180, 20)
+    changed = PatternKey(4, 3125, 125)
+    observer = ShinePatternObserver()
+    for key, at in (
+        (first, 0.0),
+        (second, 1.0),
+        (first, 2.0),
+        (changed, 3.0),
+        (first, 4.0),
+    ):
+        observer.observe(key, at=at)
+
+    assert observer.learned_sequence is None
+    assert observer.predict(now=4.5) is None
+
+
+def test_fc20_is_cached_and_replayed_as_opaque_crc_valid_data() -> None:
+    request = bytes.fromhex("01200000006481e6")
+    response = add_crc(bytes([1, 0x20, 200]) + bytes(range(200)))
+    cache = OpaqueProtocolCache()
+
+    stored = cache.put(request, response, captured_at=10.0)
+    replay = cache.get(request, now=10.5, max_age=5.0)
+
+    assert stored.response == response
+    assert replay is not None
+    assert replay.response == response
+
+
+def test_fc06_and_fc10_do_not_enter_read_cache_path() -> None:
+    cache, coordinator = _coordinator()
+    adapter = ShineVirtualInverterAdapter(
+        coordinator,
+        discovery_profiles=(min_6000tl_xh_discovery_profile(),),
+    )
+    single = add_crc(bytes.fromhex("010600bc0001"))
+    multiple = add_crc(bytes.fromhex("011000bc00020400010002"))
+
+    single_result = adapter.handle_request(single, now=0.0)
+    multiple_result = adapter.handle_request(multiple, now=0.0)
+
+    assert single_result.status == "quarantined"
+    assert multiple_result.status == "quarantined"
+    assert single_result.reason == "write_not_allowed"
+    assert multiple_result.reason == "write_not_allowed"
+    assert coordinator.issued_requests == []
+    assert cache.snapshots() == ()
+
+
+def test_unknown_shine_function_is_quarantined_by_default() -> None:
+    adapter = _adapter()
+    unknown_function = add_crc(bytes.fromhex("012100000001"))
+
+    result = adapter.handle_request(unknown_function, now=0.0)
+
+    assert result.status == "quarantined"
+    assert result.response is None
+
+
+def test_cache_gateway_is_explicitly_non_default() -> None:
+    assert CACHE_GATEWAY_DEFAULT_ENABLED is False
