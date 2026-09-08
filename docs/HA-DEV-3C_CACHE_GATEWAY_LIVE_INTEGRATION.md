@@ -1,8 +1,8 @@
 # HA-DEV-3C cache gateway live integration
 
-Status: Stage A accepted; Stage B is in progress with the already-connected
-Shine. The current canary is not yet marked green because the inverter still
-shows intermittent no-response transactions.
+Status: Stage A accepted; Stage B is operational with the connected Shine and
+is transport-transparent. It is not yet marked fully green because the
+inverter still shows intermittent genuine no-response transactions.
 
 ## Legacy baseline
 
@@ -103,13 +103,13 @@ Shine paths. The current image includes the following corrections:
 * an independent background poller is disabled in `cache+shine`, leaving Shine
   timing primary while HA cache misses still refresh the physical cache.
 
-The current source commit is `b2e33dc995a356009b2b1734507a8022a13fef69`,
-built on the RPi as:
+The current source commit is `8776256` (`Keep Shine FC20 timeouts
+transparent`), built on the RPi as:
 
 ```text
-tag:      growatt-rtu-broker:ha-dev-3c-b2e33dc
-image ID: sha256:689a7a6e27d7905a33d5218170bdcb79607a4b2e820547be5f4197c8d46ab647
-container: growatt-broker-ha3c-stage-b-r4
+tag:      growatt-rtu-broker:ha-dev-3c-transparent-timeout
+image ID: sha256:178c48c19e9354c0f7e74098e0fcc19203fff4fa0d97d6fcb9fee8561ebfbb17
+container: growatt-broker-ha3c-stage-b-transparent
 mode:     cache+shine
 paths:    inverter and Shine stable /dev/serial/by-id aliases
 ```
@@ -147,3 +147,50 @@ that short bounded slice, and no CRC/drop/timeout/combined-frame suspect. The
 longer broker log confirms that FC20 responses continue after these forwarded
 frames. This is direct evidence that asynchronous traffic is now preserved
 for Shine observation.
+
+The transparent-timeout canary then used this fresh bounded primary capture:
+
+```text
+/tmp/growatt-ha-dev-3c-transparent-sniff-20260908-195043.jsonl
+```
+
+The existing `tools/analyze_sniff_log.py` reported 19 Shine requests and 19
+responses, zero time-outs, drops, or CRC failures, and two asynchronous
+inverter frames. The analyzer flagged three possible combined-frame suspects;
+these are heuristic findings inside large, individually CRC-valid response
+events, not observed dropped or concatenated wire records. The capture ended
+while two FC20 requests were still pending, so their eventual responses are
+not counted in that bounded file.
+
+The preceding five-minute runtime slice had three genuine downstream
+time-outs and one automatic inverter serial reopen. After the reopen, normal
+Shine and HA traffic continued. A timeout is now reported without synthesizing
+an inverter exception for the Shine; the Shine is allowed to retry according
+to its own protocol behavior.
+
+## Hot-plug contract
+
+The Shine is deliberately hot-pluggable. The broker:
+
+* accepts and retries a stable `/dev/serial/by-id` alias even when the device
+  is absent at startup;
+* detects disappearance of the alias or serial I/O errors, closes the stale
+  descriptor, and retries opening the alias;
+* keeps the inverter descriptor under the single downstream transaction
+  coordinator;
+* forwards valid Shine reads, writes, unknown functions, and physical
+  responses transparently when they are not answered from cache;
+* forwards valid asynchronous inverter frames to the Shine when it is
+  connected, and records them when it is temporarily absent.
+
+The live aliases are currently:
+
+```text
+/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0  inverter
+/dev/serial/by-id/usb-04e2_1410-if00-port0         Shine
+```
+
+No Shine unplug/replug was required during this canary because the device was
+already connected. The reconnect behavior is covered by deterministic tests
+and by the stable-alias/open-error path; a physical hot-plug acceptance run
+remains a separate live observation if needed.
