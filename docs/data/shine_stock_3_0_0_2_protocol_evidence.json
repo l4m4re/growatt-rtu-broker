@@ -1,0 +1,78 @@
+{
+  "artifact": "HA-DEV-3B",
+  "firmware_scope": "stock ShineWiFi-X-compatible ESP8266 images",
+  "evidence_classes": [
+    "PROVEN_BINARY",
+    "PROVEN_LIVE",
+    "STRONG_CORRELATION",
+    "PLAUSIBLE",
+    "UNKNOWN"
+  ],
+  "findings": [
+    {
+      "id": "discovery-request-construction",
+      "class": "PROVEN_BINARY",
+      "location": "primary file offset 0x473d8 / VMA 0x402473d8",
+      "finding": "A routine constructs an eight-byte FC03 request with address 43 and count 1, computes Modbus CRC16, and sends it. The first byte is a routine argument; the binary does not hard-code that argument to zero.",
+      "live_correlation": "The live Shine repeatedly sends unit-0 00 03 00 2b 00 01 f5 d3."
+    },
+    {
+      "id": "discovery-response-device-type",
+      "class": "STRONG_CORRELATION",
+      "location": "primary VMA 0x40247455-0x402475a3",
+      "finding": "The same routine derives the expected data length from the response count, validates CRC, extracts response bytes 3-4 as a 16-bit device-type value, and maps ranges to internal profile values. Literal 0x13ec is one mapping result.",
+      "limitation": "The visible path does not prove that the response unit must be 1 or that wire value 0x13ec alone is the acceptance condition."
+    },
+    {
+      "id": "min-native-pages",
+      "class": "STRONG_CORRELATION",
+      "location": "primary VMA 0x40247068-0x402471c7",
+      "finding": "The profile initializer has a 0x13ec branch sharing the 0xbb8 branch and writes 3000, 3125, and 125-word descriptor fields, with additional function/profile selector bytes.",
+      "limitation": "The descriptor fields do not independently prove FC03 versus FC04 for every page."
+    },
+    {
+      "id": "first-normal-h209",
+      "class": "PROVEN_BINARY",
+      "location": "primary file offset 0x47720 / VMA 0x40247720",
+      "finding": "A routine constructs FC03 address 0x00d1 (H209), count 0x000f, computes CRC, sends the request, validates a response CRC, and uses a one-second retry wait on failure.",
+      "live_correlation": "This is the first normal request in the independent live sequence after the accepted discovery response."
+    },
+    {
+      "id": "fc20",
+      "class": "UNKNOWN",
+      "finding": "No explicit 01 20 00 00 00 64 prefix or unambiguous FC20-specific parser was recovered from the stock image. The exact FC20 request and 200-byte response remain PROVEN_LIVE only."
+    },
+    {
+      "id": "h188",
+      "class": "UNKNOWN",
+      "finding": "The binary contains immediate value 188 in a collector/network data path, but static control flow does not prove a FC06 H188 write or its trigger. The earlier Shine-originated FC06 observation remains PROVEN_LIVE."
+    },
+    {
+      "id": "network-separation",
+      "class": "STRONG_CORRELATION",
+      "finding": "The image contains separate WiFi, cloud TCP, inverter, and receive-management tasks/state strings and code paths. This supports treating local inverter state and cloud state as separate broker concerns, but does not recover the complete state machine."
+    }
+  ],
+  "live_reference": {
+    "discovery_request": "00 03 00 2b 00 01 f5 d3",
+    "discovery_response_observation": "01 03 02 13 ec b4 f9",
+    "first_normal_requests": [
+      "01 03 00 d1 00 0f 55 f7",
+      "01 03 00 b4 00 14 05 e3",
+      "01 03 00 00 00 7d 85 eb"
+    ],
+    "fc20_request": "01 20 00 00 00 64 81 e6",
+    "native_pages": [
+      "FC04 I3000 count 125",
+      "FC04 I3125 count 125",
+      "FC04 I3250 count 125"
+    ]
+  },
+  "safety": {
+    "firmware_written": false,
+    "live_serial_opened": false,
+    "production_broker_changed": false,
+    "live_inverter_writes": 0,
+    "live_shine_resets": 0
+  }
+}
