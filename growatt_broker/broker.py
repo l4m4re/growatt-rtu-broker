@@ -312,6 +312,25 @@ class RTUFramer:
             if self.capture:
                 self.capture(data, source)
 
+    def drain_complete_frames(self, on_frame: Callable[[bytes], None]) -> None:
+        """Remove and report CRC-valid frames already waiting in the buffer."""
+        while len(self.buf) >= 4:
+            data = bytes(self.buf)
+            found = None
+            for frame_start in range(len(data) - 3):
+                for frame_end in range(frame_start + 4, len(data) + 1):
+                    candidate = data[frame_start:frame_end]
+                    if crc_ok(candidate):
+                        found = frame_start, frame_end, candidate
+                        break
+                if found is not None:
+                    break
+            if found is None:
+                return
+            frame_start, frame_end, candidate = found
+            del self.buf[:frame_end]
+            on_frame(candidate)
+
     def read_frame(self, timeout: float = 3.0) -> bytes:
         start = time.perf_counter()
         while True:
@@ -958,14 +977,14 @@ class Downstream:
             if not self._ensure_serial():
                 break
             self._enforce_spacing()
-            # Discard bytes that arrived before this request so they cannot be
-            # attributed to the new request.
+            # Preserve complete asynchronous frames that arrived before this
+            # request; only incomplete bytes remain for the response reader.
             self._snapshot_buffer("pre_request_framer_buffer")
             assert self.ser is not None
-            drained = self.ser.read(self.ser.in_waiting or 0)
-            if drained:
-                self._capture_rx(drained, "pre_request_drain")
-            self.framer.buf.clear()
+            self.framer._read_available("pre_request_drain")
+            self.framer.drain_complete_frames(
+                lambda frame: self._report_async_frame(req, frame)
+            )
             self.framer.last = time.perf_counter()
             tx_ns = time.monotonic_ns()
             if self.events:
