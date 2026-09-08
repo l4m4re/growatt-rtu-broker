@@ -1149,6 +1149,22 @@ class CacheGatewayService:
             int.from_bytes(request[4:6], "big"),
         )
 
+    @staticmethod
+    def _written_holding_key(request: bytes) -> RegisterKey | None:
+        if not cache_crc_ok(request) or len(request) < 8:
+            return None
+        if request[1] == 0x06 and len(request) == 8:
+            return RegisterKey(3, int.from_bytes(request[2:4], "big"), 1)
+        if request[1] != 0x10 or len(request) < 9:
+            return None
+        count = int.from_bytes(request[4:6], "big")
+        byte_count = request[6]
+        if not 1 <= count <= 125 or byte_count != count * 2:
+            return None
+        if len(request) != 9 + byte_count:
+            return None
+        return RegisterKey(3, int.from_bytes(request[2:4], "big"), count)
+
     def _policy_for(self, key: RegisterKey) -> CachePolicy | None:
         for policy in self.policies:
             if policy.key.contains(key):
@@ -1372,6 +1388,27 @@ class CacheGatewayService:
             standard_modbus=standard_response_spec(request) is not None,
         )
         if response:
+            written_key = self._written_holding_key(request)
+            if written_key is not None:
+                with self._lock:
+                    invalidated = self.cache.invalidate_overlapping(written_key)
+                self._emit(
+                    "cache_invalidated_after_write",
+                    role="INFO",
+                    client=client,
+                    source=source,
+                    function=request[1],
+                    start=written_key.start,
+                    count=written_key.count,
+                    blocks=len(invalidated),
+                )
+                self._emit(
+                    "shine_write_forwarded",
+                    role="INFO",
+                    client=client,
+                    source=source,
+                    **parse_rtu(request),
+                )
             self._emit(
                 "shine_physical_passthrough",
                 role="INFO",

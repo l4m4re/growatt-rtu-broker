@@ -310,6 +310,26 @@ def test_shine_writes_use_physical_passthrough_when_configured() -> None:
     assert seen == [request]
 
 
+def test_successful_shine_write_invalidates_overlapping_cache() -> None:
+    downstream = _FakeDownstream()
+    request = add_crc(bytes.fromhex("010600bc0001"))
+    downstream.transact = lambda _request, **_kwargs: request  # type: ignore[method-assign]
+    gateway = CacheGatewayService(downstream)
+    gateway.cache.put_block(
+        RegisterKey(3, 180, 20),
+        range(20),
+        captured_at=10.0,
+        source_transaction="shine-read",
+    )
+
+    result = gateway.handle_shine_passthrough(request)
+
+    assert result.status == "served"
+    assert gateway.cache.read(
+        RegisterKey(3, 180, 1), now=10.1, max_age=5.0
+    ) is None
+
+
 def test_cache_gateway_is_explicitly_non_default() -> None:
     assert CACHE_GATEWAY_DEFAULT_ENABLED is False
 

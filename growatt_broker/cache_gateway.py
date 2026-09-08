@@ -159,6 +159,19 @@ class RegisterCache:
     def snapshots(self) -> tuple[RegisterSnapshot, ...]:
         return tuple(self._blocks.values())
 
+    def invalidate_overlapping(self, key: RegisterKey) -> tuple[RegisterKey, ...]:
+        """Remove snapshots that may contain values changed by a write."""
+        invalidated = tuple(
+            snapshot_key
+            for snapshot_key in self._blocks
+            if snapshot_key.function == key.function
+            and snapshot_key.start < key.end
+            and key.start < snapshot_key.end
+        )
+        for snapshot_key in invalidated:
+            del self._blocks[snapshot_key]
+        return invalidated
+
     def _fresh_candidates(
         self, key: RegisterKey, *, now: float, max_age: float
     ) -> list[RegisterSnapshot]:
