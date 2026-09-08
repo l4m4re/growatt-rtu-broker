@@ -659,6 +659,7 @@ class Downstream:
         *,
         min_cmd_period: float = 1.0,
         rtimeout: float = 1.5,
+        fc20_timeout: float = 3.0,
         events: Optional[EventHub] = None,
         forensic: ForensicCapture | None = None,
         shine_burst: int = 8,
@@ -699,6 +700,7 @@ class Downstream:
         self._consecutive_shine = 0
         self.min_cmd_period = float(min_cmd_period)
         self.rtimeout = float(rtimeout)
+        self.fc20_timeout = float(fc20_timeout)
         self._last_done = 0.0
         self._consecutive_timeouts = 0
         self._reopen_after_timeouts = 2
@@ -832,7 +834,7 @@ class Downstream:
 
         return self.framer.read_matching(
             matches,
-            timeout=self.rtimeout,
+            timeout=self.fc20_timeout,
             on_unmatched=lambda frame: self._report_async_frame(request, frame),
         )
 
@@ -2218,6 +2220,12 @@ def main():
         "--rtimeout", type=float, default=1.5, help="RTU read timeout seconds"
     )
     ap.add_argument(
+        "--fc20-timeout",
+        type=float,
+        default=3.0,
+        help="FC20 read timeout seconds",
+    )
+    ap.add_argument(
         "--shine-burst",
         type=int,
         default=8,
@@ -2312,6 +2320,7 @@ def main():
             inv_bytes,
             min_cmd_period=args.min_period,
             rtimeout=args.rtimeout,
+            fc20_timeout=args.fc20_timeout,
             events=events,
             forensic=forensic,
             shine_burst=args.shine_burst,
