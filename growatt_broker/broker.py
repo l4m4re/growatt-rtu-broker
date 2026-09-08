@@ -1440,7 +1440,12 @@ class CacheGatewayService:
             )
             return GatewayResult("failed", client, reason="fc20 refresh failed")
         if len(response) != 205 or response[2] != 200:
-            return GatewayResult("failed", client, reason="invalid fc20 response shape")
+            return GatewayResult(
+                "served",
+                client,
+                response=response,
+                reason="fc20_passthrough_unvalidated",
+            )
         cached = self.fc20_cache.put(request, response, captured_at=now)
         self._emit(
             "fc20_refresh",
@@ -1888,7 +1893,11 @@ class ShineEndpoint(threading.Thread):
                     resp = result.response or b""
                     if result.status == "quarantined" and not resp:
                         resp = add_crc(bytes([req[0], function | 0x80, 0x01]))
-                    if result.status == "failed" and not resp:
+                    if (
+                        result.status == "failed"
+                        and not resp
+                        and result.reason != "physical passthrough timeout"
+                    ):
                         resp = add_crc(bytes([req[0], function | 0x80, 0x0B]))
                     if self.events:
                         self.events.emit(
