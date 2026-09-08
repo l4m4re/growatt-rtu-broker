@@ -1692,18 +1692,29 @@ class ShineEndpoint(threading.Thread):
 
     def _forward_async_frame(self, frame: bytes) -> None:
         """Forward unsolicited inverter frames to the physical Shine."""
-        with self._write_lock:
-            if self.ser is None or not self.ser.is_open:
-                if self.events:
-                    self.events.emit(
-                        event="async_frame_no_shine",
-                        role="WARN",
-                        source="INVERTER",
-                        hex=frame.hex(),
-                    )
-                return
-            self.ser.write(frame)
-            self.ser.flush()
+        try:
+            with self._write_lock:
+                if self.ser is None or not self.ser.is_open:
+                    if self.events:
+                        self.events.emit(
+                            event="async_frame_no_shine",
+                            role="WARN",
+                            source="INVERTER",
+                            hex=frame.hex(),
+                        )
+                    return
+                self.ser.write(frame)
+                self.ser.flush()
+        except (serial.SerialException, OSError, ValueError) as exc:
+            if self.events:
+                self.events.emit(
+                    event="shine_serial_error",
+                    role="WARN",
+                    port=self.dev,
+                    error=str(exc),
+                )
+            self._close_port()
+            return
         if self.forensic:
             self.forensic.record_shine(
                 frame,
