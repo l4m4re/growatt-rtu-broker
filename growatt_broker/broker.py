@@ -1678,6 +1678,8 @@ class ShineEndpoint(threading.Thread):
     ):
         super().__init__(daemon=True)
         self.dev = dev
+        self._serial_paths = Downstream._discover_serial_paths(dev)
+        self._active_serial_path = self._serial_paths[0]
         self.baud = baud
         self.fmt = fmt
         self.ds = downstream
@@ -1743,14 +1745,25 @@ class ShineEndpoint(threading.Thread):
             "O": serial.PARITY_ODD,
         }[parity]
         py_stp = {1: serial.STOPBITS_ONE, 2: serial.STOPBITS_TWO}[stop]
-        self.ser = serial.Serial(
-            self.dev,
-            self.baud,
-            bytesize=databits,
-            parity=py_par,
-            stopbits=py_stp,
-            timeout=0,
-        )
+        last_error: Exception | None = None
+        for path in self._serial_paths:
+            try:
+                self.ser = serial.Serial(
+                    path,
+                    self.baud,
+                    bytesize=databits,
+                    parity=py_par,
+                    stopbits=py_stp,
+                    timeout=0,
+                )
+            except (serial.SerialException, OSError) as exc:
+                last_error = exc
+                continue
+            self._active_serial_path = path
+            break
+        else:
+            assert last_error is not None
+            raise last_error
         bits_per_char = 1 + databits + stop + (0 if parity == "N" else 1)
         self.framer = RTUFramer(self.ser, bits_per_char / self.baud)
         self._online = True
@@ -1760,7 +1773,7 @@ class ShineEndpoint(threading.Thread):
             self.events.emit(
                 event="shine_online",
                 role="SYS",
-                port=self.dev,
+                port=self._active_serial_path,
                 baud=self.baud,
                 fmt=self.fmt,
             )
@@ -1795,7 +1808,7 @@ class ShineEndpoint(threading.Thread):
                         self.events.emit(
                             event="shine_open_failed",
                             role="WARN",
-                            port=self.dev,
+                            port=self._active_serial_path,
                             error=str(exc),
                         )
                     time.sleep(5.0)

@@ -122,7 +122,7 @@ inverter serial reopens in that window; these were not policy blocks. No
 `async_frame_observed` event occurred in the bounded window, so absence of such
 an event is not evidence that the inverter never emits asynchronous traffic.
 
-The fresh primary sniff capture was:
+The first fresh primary sniff capture was:
 
 ```text
 /tmp/growatt-ha-dev-3c-sniff-20260908-193259.jsonl
@@ -130,4 +130,20 @@ The fresh primary sniff capture was:
 
 The existing `analyze_sniff_log.py` reported 2 Shine requests and 2 responses
 in the portion captured, with zero time-outs, drops, CRC failures, or combined
-frame suspects. The capture did not contain an asynchronous frame.
+frame suspects. That short capture did not contain an asynchronous frame.
+
+A second bounded primary capture was started while the canary was running:
+
+```text
+/tmp/growatt-ha-dev-3c-sniff-async-20260908-193502.jsonl
+```
+
+It recorded a Shine FC20 request followed by valid inverter-originated
+asynchronous frames with `unit=0`, function `0` (`000000000024` and
+`000000000000000f0000000000000000ff`). The broker emitted both
+`async_frame_observed` and `async_frame_forwarded`; neither was consumed as the
+FC20 response. The existing analyser found 2 FC20 requests, no response in
+that short bounded slice, and no CRC/drop/timeout/combined-frame suspect. The
+longer broker log confirms that FC20 responses continue after these forwarded
+frames. This is direct evidence that asynchronous traffic is now preserved
+for Shine observation.
