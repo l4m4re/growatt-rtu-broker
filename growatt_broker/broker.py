@@ -1111,8 +1111,9 @@ class CacheGatewayService:
         if self.events:
             self.events.emit(event=event, **fields)
 
-    def start(self) -> None:
-        self._poller.start()
+    def start(self, *, background: bool = True) -> None:
+        if background:
+            self._poller.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -2234,7 +2235,9 @@ def main():
         )
         if args.mode != "legacy":
             gateway = CacheGatewayService(ds, events=events)
-            gateway.start()
+            # With a real Shine, its polling cadence is the authoritative
+            # source of demand; HA reads still refresh the cache on a miss.
+            gateway.start(background=args.mode != "cache+shine")
             if args.mode == "cache+shine":
                 virtual_adapter = ShineVirtualInverterAdapter(
                     gateway.coordinator,
