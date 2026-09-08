@@ -1097,11 +1097,12 @@ class CacheGatewayService:
         client: str,
         source: str,
         now: float,
+        force_refresh: bool = False,
     ) -> tuple[CachedRead | None, str | None]:
         max_age = self._max_age(key)
         with self._lock:
             cached = self.cache.read(key, now=now, max_age=max_age)
-        if cached is not None:
+        if cached is not None and not force_refresh:
             self._emit(
                 "cache_hit",
                 role="INFO",
@@ -1282,6 +1283,7 @@ class CacheGatewayService:
                         client="PREFETCH",
                         source="BACKGROUND",
                         now=now,
+                        force_refresh=True,
                     )
                 if self._stop.wait(0.02):
                     return

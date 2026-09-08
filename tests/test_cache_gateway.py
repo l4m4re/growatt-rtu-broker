@@ -325,3 +325,28 @@ def test_gateway_fc20_is_fetched_once_then_replayed() -> None:
     assert first.response == response
     assert second.response == response
     assert downstream.requests == [request]
+
+
+def test_due_background_refresh_does_not_serve_the_old_fresh_entry() -> None:
+    downstream = _FakeDownstream()
+    gateway = CacheGatewayService(downstream)
+    key = RegisterKey(4, 3000, 125)
+    gateway.cache.put_block(
+        key,
+        range(125),
+        captured_at=100.0,
+        source_transaction="old",
+    )
+
+    read, error = gateway._read_words(
+        key,
+        client="PREFETCH",
+        source="BACKGROUND",
+        now=115.0,
+        force_refresh=True,
+    )
+
+    assert error is None
+    assert read is not None
+    assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
+    assert read.words == tuple(range(3000, 3125))
