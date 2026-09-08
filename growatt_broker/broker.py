@@ -1438,7 +1438,9 @@ class CacheGatewayService:
                 client=client,
                 source=source,
             )
-            return GatewayResult("failed", client, reason="fc20 refresh failed")
+            return GatewayResult(
+                "failed", client, reason="physical passthrough timeout"
+            )
         if len(response) != 205 or response[2] != 200:
             return GatewayResult(
                 "served",
@@ -1896,7 +1898,10 @@ class ShineEndpoint(threading.Thread):
                     if (
                         result.status == "failed"
                         and not resp
-                        and result.reason != "physical passthrough timeout"
+                        and not (
+                            result.reason
+                            and result.reason.startswith("physical passthrough")
+                        )
                     ):
                         resp = add_crc(bytes([req[0], function | 0x80, 0x0B]))
                     if self.events:

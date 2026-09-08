@@ -374,6 +374,19 @@ def test_gateway_fc20_is_fetched_once_then_replayed() -> None:
     assert downstream.requests == [request]
 
 
+def test_fc20_timeout_is_reported_as_physical_passthrough_failure() -> None:
+    downstream = _FakeDownstream()
+    downstream.transact = lambda _request, **_kwargs: b""  # type: ignore[method-assign]
+    gateway = CacheGatewayService(downstream)
+    request = bytes.fromhex("01200000006481e6")
+
+    result = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=10.0)
+
+    assert result.status == "failed"
+    assert result.response is None
+    assert result.reason == "physical passthrough timeout"
+
+
 def test_due_background_refresh_does_not_serve_the_old_fresh_entry() -> None:
     downstream = _FakeDownstream()
     gateway = CacheGatewayService(downstream)
