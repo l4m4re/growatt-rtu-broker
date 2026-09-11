@@ -77,7 +77,7 @@ fi
 TCP_HOST_PORT="${TCP_BIND##*:}"
 TCP_ALT_HOST_PORT="${TCP_ALT_BIND##*:}"
 SNIFF_HOST_PORT="${SNIFF_BIND##*:}"
-DOCKER_ARGS+=(-p "${TCP_HOST_PORT}:${TCP_HOST_PORT}" -p "${TCP_ALT_HOST_PORT}:${TCP_ALT_HOST_PORT}" -p "${SNIFF_HOST_PORT}:${SNIFF_HOST_PORT}")
+  DOCKER_ARGS+=(-p "${TCP_HOST_PORT}:${TCP_HOST_PORT}" -p "${TCP_ALT_HOST_PORT}:${TCP_ALT_HOST_PORT}" -p "${SNIFF_HOST_PORT}:${SNIFF_HOST_PORT}")
 
 CONTAINER_NAME=growatt-broker
 
@@ -102,7 +102,10 @@ DOCKER_CMD=(docker run -d "${DOCKER_ARGS[@]}" growatt-rtu-broker:local \
   growatt-broker --inverter "${INVERTER_ARG}" \
     --baud "${INV_BAUD:-${BAUD:-115200}}" --bytes "${INV_BYTES:-${BYTES:-8N1}}" \
     --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
-    --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" --log "${LOG_PATH:--}" \
+    --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" \
+    --prod-tcp-writes "${PROD_TCP_WRITES:-enabled}" \
+    --dev-tcp-writes "${DEV_TCP_WRITES:-enabled}" \
+    --log "${LOG_PATH:--}" \
     --mode "${BROKER_MODE}")
 
 if [ "${SHINE_CONFIGURED}" -eq 1 ]; then

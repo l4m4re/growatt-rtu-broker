@@ -98,3 +98,30 @@ def test_predictive_refresh_yields_to_a_pending_shine_request() -> None:
     scheduler._consecutive_shine = 0
 
     assert scheduler._select_request().source == "SHINE"
+
+
+def test_write_priority_precedes_background_refresh() -> None:
+    scheduler = Downstream.__new__(Downstream)
+    scheduler._pending = [
+        DownstreamRequest(
+            request=b"background",
+            client="PREFETCH",
+            source="BACKGROUND",
+            standard_modbus=True,
+            queued_ns=1,
+            done=threading.Event(),
+        ),
+        DownstreamRequest(
+            request=b"write",
+            client="TCP:dev",
+            source="DEV_TCP",
+            standard_modbus=True,
+            queued_ns=2,
+            done=threading.Event(),
+            is_write=True,
+        ),
+    ]
+    scheduler._shine_burst = 8
+    scheduler._consecutive_shine = 0
+
+    assert scheduler._select_request().is_write is True

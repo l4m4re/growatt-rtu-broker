@@ -23,4 +23,6 @@ services:
       --sniff ${SNIFF_BIND:-0.0.0.0:5700}
       --min-period ${MIN_PERIOD:-1.0}
       --rtimeout ${RTIMEOUT:-1.5}
+      --prod-tcp-writes ${PROD_TCP_WRITES:-enabled}
+      --dev-tcp-writes ${DEV_TCP_WRITES:-enabled}
       --log ${LOG_PATH:--}

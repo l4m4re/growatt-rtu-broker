@@ -422,12 +422,16 @@ class OpaqueProtocolCache:
     def get(
         self, request: bytes, *, now: float, max_age: float
     ) -> OpaqueProtocolObject | None:
-        value = self._objects.get(request)
+        value = self.latest(request)
         if value is None or value.quality is not CacheQuality.GOOD:
             return None
         if not 0 <= now - value.captured_at <= max_age:
             return None
         return value
+
+    def latest(self, request: bytes) -> OpaqueProtocolObject | None:
+        """Return the last validated object, regardless of age."""
+        return self._objects.get(request)
 
 
 @dataclass(frozen=True)
