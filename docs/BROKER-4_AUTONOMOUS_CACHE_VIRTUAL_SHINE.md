@@ -179,4 +179,5 @@ No HA entities, Recorder data, inverter configuration, production broker, or
 long-running capture was changed by this task. The two existing untracked
 research logs remain untracked and untouched.
 
-Final SHA: pending publication
+Implementation SHA: `78832e6`  
+Final SHA before remote publication: `78832e6`
