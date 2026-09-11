@@ -33,6 +33,19 @@ class FakeSerial:
             return data
 
 
+class BusySerial:
+    def __init__(self) -> None:
+        self._started = time.perf_counter()
+
+    @property
+    def in_waiting(self) -> int:
+        return int(time.perf_counter() - self._started < 0.2)
+
+    def read(self, count: int) -> bytes:
+        time.sleep(0.001)
+        return b"\x00" * count
+
+
 def request(function: int, address: int, count: int) -> bytes:
     return add_crc(
         bytes([1, function]) + address.to_bytes(2, "big") + count.to_bytes(2, "big")
@@ -89,6 +102,43 @@ def test_exception_response() -> None:
 
     assert len(response) == 5
     assert find_standard_response(response, req) == response
+
+
+def test_shine_discovery_allows_inverter_unit_for_zero_unit_request() -> None:
+    req = request(0x03, 43, 1).replace(b"\x01", b"\x00", 1)
+    response = add_crc(bytes.fromhex("01030213ec"))
+    serial = FakeSerial()
+    serial.feed(response)
+    framer = RTUFramer(serial, char_time=0.001)
+
+    assert (
+        framer.read_standard_frame(
+            req,
+            timeout=0.2,
+            allow_unit_zero_wildcard=True,
+        )
+        == response
+    )
+
+
+def test_shine_standard_reader_rejects_same_function_wrong_length() -> None:
+    req = request(0x03, 0, 125)
+    wrong_length = add_crc(bytes([1, 0x03, 40]) + bytes(40))
+    expected = add_crc(bytes([1, 0x03, 250]) + bytes(range(250)))
+    serial = FakeSerial()
+    serial.feed(wrong_length + expected)
+    framer = RTUFramer(serial, char_time=0.001)
+    unmatched: list[bytes] = []
+
+    result = framer.read_standard_frame(
+        req,
+        timeout=0.2,
+        on_unmatched=unmatched.append,
+        allow_unit_zero_wildcard=True,
+    )
+
+    assert result == expected
+    assert unmatched == [wrong_length]
 
 
 def test_fc06_response() -> None:
@@ -167,6 +217,92 @@ def test_matching_reader_discards_valid_unrelated_async_frame() -> None:
 
     assert result == expected
     assert discarded == [async_frame]
+
+
+def test_fc20_reader_does_not_parse_crc_collision_inside_opaque_payload() -> None:
+    request_frame = add_crc(bytes.fromhex("012000000064"))
+    payload = bytearray(range(200))
+    payload[2:10] = add_crc(bytes.fromhex("008c00090400"))
+    expected = add_crc(bytes([1, 0x20, 200]) + payload)
+    serial = FakeSerial()
+    serial.feed(expected)
+    framer = RTUFramer(serial, char_time=0.001)
+    observed: list[bytes] = []
+
+    result = framer.read_fc20_frame(
+        request_frame,
+        timeout=0.2,
+        on_unmatched=observed.append,
+    )
+
+    assert result == expected
+    assert observed == []
+
+
+def test_fc20_reader_accepts_exception_response() -> None:
+    request_frame = add_crc(bytes.fromhex("012000000064"))
+    expected = add_crc(bytes.fromhex("01a002"))
+    serial = FakeSerial()
+    serial.feed(expected)
+    framer = RTUFramer(serial, char_time=0.001)
+
+    assert framer.read_fc20_frame(request_frame, timeout=0.2) == expected
+
+
+def test_matching_reader_honors_deadline_during_continuous_input() -> None:
+    framer = RTUFramer(BusySerial(), char_time=0.001)
+
+    started = time.perf_counter()
+    result = framer.read_matching(lambda _frame: False, timeout=0.05)
+
+    assert result == b""
+    assert time.perf_counter() - started < 0.2
+
+
+def test_reader_reports_unframed_serial_bytes() -> None:
+    serial = FakeSerial()
+    serial.feed(b"startup diagnostic\r\n")
+    observed: list[tuple[bytes, str]] = []
+    framer = RTUFramer(
+        serial,
+        char_time=0.001,
+        on_unframed=lambda data, reason: observed.append((data, reason)),
+    )
+
+    assert framer.read_frame(timeout=0.01) == b""
+    assert observed == [(b"startup diagnostic\r\n", "unframed_timeout")]
+    assert framer.buf == bytearray()
+
+
+def test_reader_reports_unframed_prefix_before_valid_frame() -> None:
+    expected = bytes.fromhex("010100000001fdca")
+    serial = FakeSerial()
+    serial.feed(b"debug\r\n" + expected)
+    observed: list[tuple[bytes, str]] = []
+    framer = RTUFramer(
+        serial,
+        char_time=0.001,
+        on_unframed=lambda data, reason: observed.append((data, reason)),
+    )
+
+    assert framer.read_frame(timeout=0.1) == expected
+    assert observed == [(b"debug\r\n", "prefix_before_crc_frame")]
+
+
+def test_conservative_reader_does_not_extract_frame_from_unframed_prefix() -> None:
+    expected = bytes.fromhex("010100000001fdca")
+    serial = FakeSerial()
+    serial.feed(b"boot text\r\n" + expected)
+    observed: list[tuple[bytes, str]] = []
+    framer = RTUFramer(
+        serial,
+        char_time=0.001,
+        on_unframed=lambda data, reason: observed.append((data, reason)),
+        resync=False,
+    )
+
+    assert framer.read_frame(timeout=0.01) == b""
+    assert observed == [(b"boot text\r\n" + expected, "unframed_timeout")]
 
 
 def test_standard_reader_reports_unrelated_frame_without_losing_response() -> None:

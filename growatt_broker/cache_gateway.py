@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from statistics import median
+from threading import RLock
 
 CACHE_GATEWAY_DEFAULT_ENABLED = False
 
@@ -194,6 +195,7 @@ class RegisterCache:
         now: float,
         max_age: float,
         allow_composed: bool = False,
+        allow_mixed_snapshots: bool = False,
     ) -> CachedRead | None:
         candidates = self._fresh_candidates(key, now=now, max_age=max_age)
         if candidates:
@@ -209,10 +211,20 @@ class RegisterCache:
             )
         if not allow_composed:
             return None
-        return self._read_composed(key, now=now, max_age=max_age)
+        return self._read_composed(
+            key,
+            now=now,
+            max_age=max_age,
+            allow_mixed_snapshots=allow_mixed_snapshots,
+        )
 
     def _read_composed(
-        self, key: RegisterKey, *, now: float, max_age: float
+        self,
+        key: RegisterKey,
+        *,
+        now: float,
+        max_age: float,
+        allow_mixed_snapshots: bool,
     ) -> CachedRead | None:
         remaining = key.start
         pieces: list[tuple[RegisterKey, RegisterSnapshot]] = []
@@ -243,7 +255,7 @@ class RegisterCache:
             )
             remaining = piece_end
         snapshot_ids = {snapshot.snapshot_id for _, snapshot in pieces}
-        if len(snapshot_ids) != 1:
+        if not allow_mixed_snapshots and len(snapshot_ids) != 1:
             return None
         words: list[int] = []
         snapshots: list[RegisterSnapshot] = []
@@ -444,48 +456,95 @@ class ShinePatternObserver:
         self._transitions: dict[tuple[PatternKey, PatternKey], deque[float]] = (
             defaultdict(lambda: deque(maxlen=8))
         )
+        self._key_times: dict[PatternKey, deque[float]] = defaultdict(
+            lambda: deque(maxlen=8)
+        )
+        self._last_seen: dict[PatternKey, float] = {}
+        self._lock = RLock()
         self.jitter_tolerance = jitter_tolerance
 
     def observe(self, key: PatternKey, *, at: float) -> None:
-        if self.history:
-            previous_key, previous_at = self.history[-1]
-            self._transitions[(previous_key, key)].append(at - previous_at)
-        self.history.append((key, at))
-        if not self._cycle:
-            self._cycle = [key]
-        elif key == self._cycle[0] and len(self._cycle) >= 2:
-            candidate = tuple(self._cycle)
-            if self._sequence is None:
-                self._sequence = candidate
-            elif candidate != self._sequence:
-                self._sequence = None
-            self._cycle = [key]
-        else:
-            self._cycle.append(key)
+        with self._lock:
+            if self.history:
+                previous_key, previous_at = self.history[-1]
+                self._transitions[(previous_key, key)].append(at - previous_at)
+            previous_at = self._last_seen.get(key)
+            if previous_at is not None and at > previous_at:
+                self._key_times[key].append(at - previous_at)
+            self._last_seen[key] = at
+            self.history.append((key, at))
+            if not self._cycle:
+                self._cycle = [key]
+            elif key == self._cycle[0] and len(self._cycle) >= 2:
+                candidate = tuple(self._cycle)
+                if self._sequence is None:
+                    self._sequence = candidate
+                elif candidate != self._sequence:
+                    self._sequence = None
+                self._cycle = [key]
+            else:
+                self._cycle.append(key)
 
     @property
     def learned_sequence(self) -> tuple[PatternKey, ...] | None:
-        return self._sequence
+        with self._lock:
+            return self._sequence
+
+    def due_predictions(
+        self,
+        *,
+        now: float,
+        lead: float,
+        minimum_samples: int = 2,
+    ) -> tuple[PollPrediction, ...]:
+        """Return block predictions that should be prefetched now.
+
+        Per-key timing remains useful when the Shine occasionally inserts an
+        undocumented or special transaction into its normal polling cycle.
+        """
+        with self._lock:
+            predictions: list[PollPrediction] = []
+            for key, samples in self._key_times.items():
+                if len(samples) < minimum_samples:
+                    continue
+                typical = float(median(samples))
+                if max(abs(sample - typical) for sample in samples) > self.jitter_tolerance:
+                    continue
+                last_seen = self._last_seen.get(key)
+                if last_seen is None:
+                    continue
+                due_at = last_seen + typical
+                if now < due_at - lead:
+                    continue
+                predictions.append(
+                    PollPrediction(
+                        key,
+                        due_at,
+                        min(1.0, len(samples) / 4),
+                    )
+                )
+            return tuple(sorted(predictions, key=lambda item: item.due_at))
 
     def predict(self, *, now: float, lead: float = 0.1) -> PollPrediction | None:
-        if self._sequence is None or not self.history:
-            return None
-        current, last_at = self.history[-1]
-        try:
-            index = self._sequence.index(current)
-        except ValueError:
-            return None
-        next_key = self._sequence[(index + 1) % len(self._sequence)]
-        samples = self._transitions.get((current, next_key))
-        if not samples:
-            return None
-        typical = float(median(samples))
-        if max(abs(sample - typical) for sample in samples) > self.jitter_tolerance:
-            return None
-        due_at = last_at + typical
-        if now < due_at - lead:
-            return None
-        return PollPrediction(next_key, due_at, min(1.0, len(samples) / 4))
+        with self._lock:
+            if self._sequence is None or not self.history:
+                return None
+            current, last_at = self.history[-1]
+            try:
+                index = self._sequence.index(current)
+            except ValueError:
+                return None
+            next_key = self._sequence[(index + 1) % len(self._sequence)]
+            samples = self._transitions.get((current, next_key))
+            if not samples:
+                return None
+            typical = float(median(samples))
+            if max(abs(sample - typical) for sample in samples) > self.jitter_tolerance:
+                return None
+            due_at = last_at + typical
+            if now < due_at - lead:
+                return None
+            return PollPrediction(next_key, due_at, min(1.0, len(samples) / 4))
 
 
 @dataclass(frozen=True)
@@ -529,6 +588,13 @@ class ShineVirtualInverterAdapter:
             return GatewayResult("quarantined", "SHINE", reason="invalid_crc_or_frame")
         profile = self.discovery_profiles.get(frame)
         if profile is not None:
+            if self.passthrough_handler is not None:
+                self.mode = BrokerMode.SHINE_PRESENT
+                return self._passthrough(
+                    frame,
+                    now,
+                    f"physical_discovery:{profile.device_id}",
+                )
             self.mode = BrokerMode.SHINE_PRESENT
             return GatewayResult(
                 "discovery",

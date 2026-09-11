@@ -98,6 +98,22 @@ handling paths. They do not pass the result to a routine or format string
 that constructs `XGD6CCN109`, and the `IOT_ESP_InverterNewSN_Get` strings alone
 do not prove where that value originates.
 
+The Ghidra pass adds one important, narrower proof. The SoftAP configuration
+getter at VMA `0x40205c78` copies the current SSID/password and AP settings
+from the runtime `user_interface.c` state. If the saved SSID is invalid, it
+calls the formatting wrapper at `0x4022278c` with the literal format
+`ESP_%02X%02X%02X` and three bytes obtained from the SoftAP MAC through
+`0x402058f0` with interface selector `1`. For the known device this explains
+the ESP-local fallback identifier `ESP_74F8DE`: it is a genuine
+hardware-derived default AP name. This is not a path to the Growatt serial.
+
+The normal SoftAP initializer at `0x40242e78` subsequently overwrites the
+first 32-byte SSID field of the 108-byte config object with a buffer produced
+by the collector/new-parameter reader (`0x4023b65c`). That buffer is loaded
+through a parameter record and is not proven to be the MAC fallback. The
+binary therefore proves both a MAC-derived default path and a separate
+runtime/persisted parameter path for the actual AP SSID.
+
 The only simple transformation supported by firmware evidence is the direct
 uppercase hexadecimal lower-24-bit value in `ESP_74F8DE`; it explains an
 ESP-local name and not `6CCN109`. Full-MAC, reversed-byte, decimal, 24/32-bit
@@ -161,38 +177,42 @@ This is strong binary evidence for the remembered `192.168.10.100` SoftAP
 address, but not evidence for the SSID's identity source.
 
 The important result is the SSID source boundary: the SoftAP setter receives a
-108-byte runtime configuration object whose surrounding initializer reads
-configuration/flash-backed buffers. The clearest candidate sources are the
-`0x3fa000` parameter area passed through helper `0x4024a33c` and the small
-`0x5000`/dynamic ten-byte reads in the same initializer; neither can be
-identified as a serial record from this stripped image. The current
-disassembly does not provide
-stable field names proving which object offset is the SSID, and it does not
-show a proven copy of the formatted MAC into that field. No
-`XGD6CCN109` literal, chip-ID-to-serial conversion, or product-prefix builder
-is present in this path. The static image therefore cannot prove that the
-visible SSID is generated from the MAC or chip ID. It is compatible with a
-provisioned serial/config field (possibly encoded or loaded by a helper), and
-also with a value obtained from another runtime subsystem. The
+108-byte runtime configuration object whose SSID can be populated from the
+collector/new-parameter buffer after the `user_interface.c` defaults have been
+loaded. The `0x3fa000` area passed through helper `0x4024a33c` is a structured
+WiFi/web configuration record; its visible eight-byte text field matches the
+reported default admin-password value, so it is evidence for the web
+configuration record rather than for the Growatt serial. The password itself
+is deliberately not reproduced in this report. The small `0x5000`/dynamic
+reads and collector parameter record remain candidate sources for the actual
+SSID, but their field semantics are not fully recoverable from this stripped
+image.
+
+No `XGD6CCN109` literal, chip-ID-to-serial conversion, or product-prefix
+builder is present. The observed XGD SSID therefore cannot be attributed to
+the stock MAC-derived fallback. It remains compatible with a provisioned
+serial/config field (possibly encoded or loaded by a helper), or with a value
+obtained from another runtime subsystem. The
 `IOT_ESP_InverterNewSN_Get` strings identify a serial-related getter/logging
-area but no unambiguous caller-to-SoftAP data flow was recoverable from this
-stripped image.
+area but no complete caller-to-serial-to-SoftAP data flow was recoverable from
+this stripped image.
 
 ### Effect on identity classification and Shine B restoration
 
-The button/SoftAP evidence does **not** change the serial-origin result:
+The button/SoftAP evidence now proves a hardware-derived *fallback AP name*,
+but does **not** prove the origin of the observed Growatt serial:
 
 **UNKNOWN**
 
-The visible SSID is a valuable future behavioral anchor, but the current
-static path proves only that SoftAP configuration consumes a runtime buffer.
-It does not prove `PROVEN_DERIVED_FROM_HARDWARE_ID` or
-`PROVISIONED_BUT_ENCODED`. A stock restore on Shine B may regenerate an
-ESP-local AP name from B's own hardware identity, but it cannot currently be
-expected to regenerate B's Growatt serial. Before restoring B, recover B's
-complete flash, own MAC/chip ID, printed serial, duplicated configuration
-records, and any separate provisioning/cloud material; then compare the AP
-configuration path and observed SSID without copying Shine A's identity.
+The visible SSID is a valuable future behavioral anchor. A stock restore on
+Shine B should be expected to regenerate the ESP-local fallback AP name from
+B's own SoftAP MAC when its saved SSID is blank/invalid, but it cannot
+currently be expected to regenerate B's Growatt serial. If B's saved SSID is
+valid, the firmware instead reuses the persisted/runtime parameter value.
+Before restoring B, recover B's complete flash, own MAC/chip ID, printed
+serial, duplicated configuration records, and any separate
+provisioning/cloud material; then compare the AP configuration path and
+observed SSID without copying Shine A's identity.
 
 The dump contains no proven fixed-size record for `XGD6CCN109`, no proven
 identity checksum, and no proven cloud token associated with that serial. The

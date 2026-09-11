@@ -11,8 +11,9 @@ The Shine serial connection becomes a virtual-inverter client interface. Its
 discovery request is terminated locally for a validated device profile, and
 normal reads are answered from the same register cache used by HA.
 
-The cache implementation is enabled only with `--mode cache` or
-`--mode cache+shine`. The default remains `--mode legacy`, so no production
+The cache implementation is enabled only with `--mode cache`, `--mode cache+shine`,
+or `--mode cache+shine-direct`. The default remains `--mode legacy`, so no
+production
 mode changes merely by upgrading the image.
 
 ## Evidence from HA-DEV-2C/2D/2E
@@ -66,8 +67,9 @@ SHINE_RECOVERING/DISCOVERY -- exact profiled H43 --> SHINE_PRESENT
 
 `SHINE_ABSENT` and `SHINE_LOST` keep autonomous polling alive. In
 `SHINE_PRESENT`, Shine requests are observations and demand signals; they do
-not acquire physical ownership. A discovery request is answered locally only
-when it exactly matches a device-scoped `DiscoveryProfile`.
+not acquire physical ownership. A discovery request is recognized only when it
+exactly matches a device-scoped `DiscoveryProfile`; in the transparent canary
+it is physically passed through so the inverter remains authoritative.
 
 ## Raw register cache
 
@@ -109,12 +111,26 @@ The cache mode can be exercised with:
 ```text
 --mode cache
 --mode cache+shine --shine /dev/serial/by-id/<shine-port>
+--mode cache+shine-direct --shine /dev/serial/by-id/<shine-port>
 ```
 
-`cache+shine` terminates the validated unit-0 discovery request locally,
-answers standard reads from the shared cache, replays a validated FC20 object
-from the same service, and quarantines writes. Legacy and raw-transparent
-modes retain their existing behavior.
+`cache+shine` recognizes the validated unit-0 discovery request but forwards it
+through the physical passthrough, answers standard reads from the shared cache,
+replays a validated FC20 object from the same service, and forwards writes and
+other valid unknown requests physically. Valid unsolicited inverter frames are
+forwarded to the Shine. Bytes that do not form a CRC-valid frame are detected
+and reported (`shine_unframed_bytes` or `inverter_unframed_bytes`) with a
+bounded preview; they are not forwarded. Legacy and raw-transparent modes
+retain their existing behavior.
+
+`cache+shine-direct` keeps the cache available for HA/TCP clients but makes the
+Shine serial endpoint fully transparent: every valid Shine request, including
+discovery, FC20, writes, and unknown functions, is sent to the inverter and the
+physical response is returned to the Shine. No Shine request is answered from
+the register or FC20 cache. The cache is still populated by HA/TCP reads and
+is available to those clients. This mode is intended for validating Shine
+behavior that depends on coherent, current inverter registers such as clock or
+status fields.
 
 ## Native block polling
 

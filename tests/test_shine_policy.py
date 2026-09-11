@@ -32,9 +32,18 @@ def test_read_only_policy_allows_standard_reads_only() -> None:
 
 
 def test_transparent_policy_is_explicit() -> None:
-    request = add_crc(bytes.fromhex("012000000001"))
+    requests = (
+        _read(),
+        add_crc(bytes.fromhex("010600100001")),
+        add_crc(bytes.fromhex("0110001000020400010002")),
+        add_crc(bytes.fromhex("012000000001")),
+        add_crc(bytes.fromhex("012100000001")),
+    )
 
-    assert shine_policy_disposition(request, "transparent") == "forwarded"
+    assert all(
+        shine_policy_disposition(request, "transparent") == "forwarded"
+        for request in requests
+    )
 
 
 def test_scheduler_prefers_shine_and_then_serves_production() -> None:

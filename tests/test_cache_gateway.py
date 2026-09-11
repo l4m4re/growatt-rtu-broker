@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from growatt_broker.broker import CacheGatewayService
 from growatt_broker.cache_gateway import (
     CACHE_GATEWAY_DEFAULT_ENABLED,
@@ -8,6 +10,7 @@ from growatt_broker.cache_gateway import (
     GatewayResult,
     OpaqueProtocolCache,
     PatternKey,
+    PollPrediction,
     PollCoordinator,
     RegisterCache,
     RegisterKey,
@@ -38,6 +41,49 @@ def test_exact_device_scoped_discovery_generates_expected_response() -> None:
     assert result.status == "discovery"
     assert result.response == profile.response
     assert result.reason == profile.device_id
+
+
+def test_discovery_uses_physical_passthrough_when_available() -> None:
+    profile = min_6000tl_xh_discovery_profile()
+    seen: list[bytes] = []
+
+    def passthrough(frame: bytes, _now: float) -> GatewayResult:
+        seen.append(frame)
+        return GatewayResult(
+            "served", "SHINE", response=profile.response, reason="physical_passthrough"
+        )
+
+    _, coordinator = _coordinator()
+    adapter = ShineVirtualInverterAdapter(
+        coordinator,
+        discovery_profiles=(profile,),
+        passthrough_handler=passthrough,
+    )
+
+    result = adapter.handle_request(profile.request, now=0.0)
+
+    assert result.status == "served"
+    assert result.response == profile.response
+    assert result.reason == "physical_passthrough"
+    assert seen == [profile.request]
+
+
+def test_unit_zero_discovery_accepts_physical_unit_one_response() -> None:
+    profile = min_6000tl_xh_discovery_profile()
+    calls: list[tuple[bytes, bool]] = []
+
+    class RecordingDownstream:
+        def transact(self, request: bytes, **kwargs: object) -> bytes:
+            calls.append((request, bool(kwargs["standard_modbus"])))
+            return profile.response
+
+    gateway = CacheGatewayService(RecordingDownstream())
+
+    result = gateway.handle_shine_passthrough(profile.request)
+
+    assert result.status == "served"
+    assert result.response == profile.response
+    assert calls == [(profile.request, False)]
 
 
 def test_unrelated_unit_zero_request_is_not_answered_as_discovery() -> None:
@@ -221,6 +267,25 @@ def test_pattern_observer_falls_back_after_sequence_change() -> None:
     assert observer.predict(now=4.5) is None
 
 
+def test_pattern_observer_predicts_due_block_without_fixed_sequence() -> None:
+    first = PatternKey(4, 3000, 125)
+    second = PatternKey(4, 3125, 125)
+    observer = ShinePatternObserver(jitter_tolerance=0.2)
+    for key, at in (
+        (first, 0.0),
+        (second, 1.0),
+        (first, 2.0),
+        (second, 3.0),
+        (first, 4.0),
+        (second, 5.0),
+    ):
+        observer.observe(key, at=at)
+
+    predictions = observer.due_predictions(now=6.5, lead=0.2)
+
+    assert predictions == (PollPrediction(first, 6.0, 0.5),)
+
+
 def test_fc20_is_cached_and_replayed_as_opaque_crc_valid_data() -> None:
     request = bytes.fromhex("01200000006481e6")
     response = add_crc(bytes([1, 0x20, 200]) + bytes(range(200)))
@@ -372,6 +437,34 @@ def test_gateway_reads_from_one_native_block_and_replays_subsets() -> None:
     assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
 
 
+def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
+    downstream = _FakeDownstream()
+    gateway = CacheGatewayService(downstream)
+    request = add_crc(bytes.fromhex("01040c1d0020"))
+
+    result = gateway.handle_standard_request(
+        request, client="HA", source="PROD_TCP"
+    )
+
+    assert result.status == "served"
+    assert result.read is not None
+    assert result.read.words == tuple(range(3101, 3133))
+    assert downstream.requests == [
+        bytes.fromhex("01040bb8007db22a"),
+        bytes.fromhex("01040c35007d2375"),
+    ]
+
+    repeated = gateway.handle_standard_request(
+        request, client="HA", source="PROD_TCP"
+    )
+
+    assert repeated.status == "served"
+    assert downstream.requests == [
+        bytes.fromhex("01040bb8007db22a"),
+        bytes.fromhex("01040c35007d2375"),
+    ]
+
+
 def test_ha_uses_a_recent_shine_snapshot_before_refreshing() -> None:
     downstream = _FakeDownstream()
     gateway = CacheGatewayService(downstream)
@@ -455,3 +548,21 @@ def test_due_background_refresh_does_not_serve_the_old_fresh_entry() -> None:
     assert read is not None
     assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
     assert read.words == tuple(range(3000, 3125))
+
+
+def test_predictive_prefetch_refreshes_next_native_shine_block() -> None:
+    downstream = _FakeDownstream()
+    gateway = CacheGatewayService(downstream, predictive_prefetch=True)
+    request = add_crc(bytes.fromhex("01040bb8007d"))
+
+    for at in (0.0, 10.0, 20.0):
+        gateway.observe_shine_request(request, at=at)
+
+    gateway._run_predictive_prefetch(28.0)
+
+    assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
+    assert gateway.cache.read(
+        RegisterKey(4, 3000, 125),
+        now=time.monotonic(),
+        max_age=5.0,
+    ) is not None

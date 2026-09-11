@@ -31,10 +31,12 @@ from .cache_gateway import (
     CachedRead,
     GatewayResult,
     OpaqueProtocolCache,
+    PatternKey,
     PollCoordinator,
     RegisterCache,
     RegisterKey,
     RegisterSnapshot,
+    ShinePatternObserver,
     ShineVirtualInverterAdapter,
     build_read_response,
     min_6000tl_xh_discovery_profile,
@@ -101,7 +103,9 @@ def shine_policy_disposition(request: bytes, policy: str = "read-only") -> str:
     return "blocked_unknown"
 
 
-def find_standard_response(buffer: bytes, request: bytes) -> bytes | None:
+def find_standard_response(
+    buffer: bytes, request: bytes, *, allow_unit_zero_wildcard: bool = False
+) -> bytes | None:
     """Find one complete response matching a standard Modbus request.
 
     Response length is derived from the request.  This deliberately does not
@@ -114,7 +118,9 @@ def find_standard_response(buffer: bytes, request: bytes) -> bytes | None:
 
     unit, function, normal_length = spec
     for start in range(len(buffer)):
-        if buffer[start] != unit:
+        if buffer[start] != unit and not (
+            allow_unit_zero_wildcard and unit == 0 and buffer[start] != 0
+        ):
             continue
         if start + 5 <= len(buffer):
             candidate = buffer[start : start + 5]
@@ -290,6 +296,8 @@ class RTUFramer:
         char_time: float,
         gap_chars: float = 3.5,
         capture: Callable[[bytes, str], None] | None = None,
+        on_unframed: Callable[[bytes, str], None] | None = None,
+        resync: bool = True,
     ):
         self.ser = ser
         self.char_time = char_time
@@ -300,6 +308,24 @@ class RTUFramer:
         self.gap = max(gap_chars * char_time, gap_floor)
         self.buf = bytearray()
         self.last = time.perf_counter()
+        self.on_unframed = on_unframed
+        self.resync = resync
+
+    def _first_crc_frame(
+        self,
+        data: bytes,
+    ) -> tuple[int, int, bytes] | None:
+        starts = range(len(data) - 3) if self.resync else (0,)
+        for frame_start in starts:
+            for frame_end in range(frame_start + 4, len(data) + 1):
+                candidate = data[frame_start:frame_end]
+                if crc_ok(candidate):
+                    return frame_start, frame_end, candidate
+        return None
+
+    def _report_unframed(self, data: bytes, reason: str) -> None:
+        if data and self.on_unframed is not None:
+            self.on_unframed(data, reason)
 
     def _read_available(self, source: str) -> None:
         count = self.ser.in_waiting
@@ -316,15 +342,7 @@ class RTUFramer:
         """Remove and report CRC-valid frames already waiting in the buffer."""
         while len(self.buf) >= 4:
             data = bytes(self.buf)
-            found = None
-            for frame_start in range(len(data) - 3):
-                for frame_end in range(frame_start + 4, len(data) + 1):
-                    candidate = data[frame_start:frame_end]
-                    if crc_ok(candidate):
-                        found = frame_start, frame_end, candidate
-                        break
-                if found is not None:
-                    break
+            found = self._first_crc_frame(data)
             if found is None:
                 return
             frame_start, frame_end, candidate = found
@@ -334,8 +352,29 @@ class RTUFramer:
     def read_frame(self, timeout: float = 3.0) -> bytes:
         start = time.perf_counter()
         while True:
-            n = self.ser.in_waiting
             now = time.perf_counter()
+            if now - start > timeout:
+                residual = bytes(self.buf)
+                if len(self.buf) >= 4:
+                    buf = residual
+                    found = self._first_crc_frame(buf)
+                    if found is not None:
+                        start_idx, end_idx, frame = found
+                        self._report_unframed(
+                            buf[:start_idx], "prefix_before_crc_frame"
+                        )
+                        remaining = buf[end_idx:]
+                        self.buf.clear()
+                        if remaining:
+                            self.buf.extend(remaining)
+                        return frame
+                self._report_unframed(residual, "unframed_timeout")
+                if len(residual) > 8192 and self.capture:
+                    self.capture(residual, "buffer_overflow_discard")
+                self.buf.clear()
+                return b""
+
+            n = self.ser.in_waiting
             if n:
                 self._read_available("normal_read")
                 now = time.perf_counter()
@@ -348,18 +387,17 @@ class RTUFramer:
                         # Search for a valid frame anywhere in the buffer (handles
                         # possible mis-alignment if we started reading mid-frame).
                         buf = bytes(self.buf)
-                        for start_idx in range(0, len(buf) - 3):
-                            # minimal frame length is 4 bytes
-                            for end_idx in range(start_idx + 4, len(buf) + 1):
-                                if crc_ok(buf[start_idx:end_idx]):
-                                    # Extract the first valid frame
-                                    frame = buf[start_idx:end_idx]
-                                    # Remove consumed bytes (including any prefix garbage)
-                                    remaining = buf[end_idx:]
-                                    self.buf.clear()
-                                    if remaining:
-                                        self.buf.extend(remaining)
-                                    return frame
+                        found = self._first_crc_frame(buf)
+                        if found is not None:
+                            start_idx, end_idx, frame = found
+                            self._report_unframed(
+                                buf[:start_idx], "prefix_before_crc_frame"
+                            )
+                            remaining = buf[end_idx:]
+                            self.buf.clear()
+                            if remaining:
+                                self.buf.extend(remaining)
+                            return frame
                         # No valid CRC-terminated frame found; fallthrough to
                         # timeout handling below (do not return partial data yet)
                     else:
@@ -372,19 +410,22 @@ class RTUFramer:
                     # processing incomplete frames which would fail CRC checks.
                     if len(self.buf) >= 4:
                         buf = bytes(self.buf)
-                        for start_idx in range(0, len(buf) - 3):
-                            for end_idx in range(start_idx + 4, len(buf) + 1):
-                                if crc_ok(buf[start_idx:end_idx]):
-                                    frame = buf[start_idx:end_idx]
-                                    remaining = buf[end_idx:]
-                                    self.buf.clear()
-                                    if remaining:
-                                        self.buf.extend(remaining)
-                                    return frame
+                        found = self._first_crc_frame(buf)
+                        if found is not None:
+                            start_idx, end_idx, frame = found
+                            self._report_unframed(
+                                buf[:start_idx], "prefix_before_crc_frame"
+                            )
+                            remaining = buf[end_idx:]
+                            self.buf.clear()
+                            if remaining:
+                                self.buf.extend(remaining)
+                            return frame
                     # Protect against runaway buffer growth: if buffer gets very
                     # large and no valid frame is detected, drop it and return
                     # timeout to avoid memory issues.
                     if len(self.buf) > 8192:
+                        self._report_unframed(bytes(self.buf), "buffer_overflow_discard")
                         if self.capture:
                             self.capture(bytes(self.buf), "buffer_overflow_discard")
                         self.buf.clear()
@@ -397,6 +438,7 @@ class RTUFramer:
         request: bytes,
         timeout: float = 3.0,
         on_unmatched: Callable[[bytes], None] | None = None,
+        allow_unit_zero_wildcard: bool = False,
     ) -> bytes:
         """Read an exact-length response for a standard Modbus request."""
         if standard_response_spec(request) is None:
@@ -420,7 +462,10 @@ class RTUFramer:
             return (
                 len(candidate) < normal_length
                 and len(candidate) >= 3
-                and candidate[0] == unit
+                and (
+                    candidate[0] == unit
+                    or (allow_unit_zero_wildcard and unit == 0 and candidate[0] != 0)
+                )
                 and candidate[1] == function
                 and candidate[2] == normal_length - 5
             )
@@ -441,7 +486,11 @@ class RTUFramer:
             if self.ser.in_waiting:
                 self._read_available("normal_read")
             buffer = bytes(self.buf)
-            response = find_standard_response(buffer, request)
+            response = find_standard_response(
+                buffer,
+                request,
+                allow_unit_zero_wildcard=allow_unit_zero_wildcard,
+            )
             if response is not None:
                 response_start = buffer.find(response)
                 report_unmatched_prefix(response_start)
@@ -478,6 +527,82 @@ class RTUFramer:
                 return frame
             if on_unmatched is not None:
                 on_unmatched(frame)
+
+    def read_fc20_frame(
+        self,
+        request: bytes,
+        *,
+        timeout: float = 3.0,
+        on_unmatched: Callable[[bytes], None] | None = None,
+    ) -> bytes:
+        """Read the complete FC20 response without parsing payload subframes."""
+        expected_length = 205
+        expected_prefix = bytes((request[0], request[1], 200))
+        deadline = time.perf_counter() + timeout
+
+        def find_response(data: bytes) -> tuple[int, bytes] | None:
+            if len(data) >= 5:
+                exception = data[:5]
+                if (
+                    exception[0] == request[0]
+                    and exception[1] == (request[1] | 0x80)
+                    and crc_ok(exception)
+                ):
+                    return 0, exception
+            for start in range(len(data) - expected_length + 1):
+                candidate = data[start : start + expected_length]
+                if candidate.startswith(expected_prefix) and crc_ok(candidate):
+                    return start, candidate
+            return None
+
+        while True:
+            if self.ser.in_waiting:
+                self._read_available("normal_read")
+
+            data = bytes(self.buf)
+            found = find_response(data)
+            if found is not None:
+                start, response = found
+                prefix = data[:start]
+                while prefix:
+                    frame = self._first_crc_frame(prefix)
+                    if frame is None:
+                        self._report_unframed(prefix, "prefix_before_crc_frame")
+                        break
+                    frame_start, frame_end, candidate = frame
+                    if frame_start:
+                        self._report_unframed(
+                            prefix[:frame_start], "prefix_before_crc_frame"
+                        )
+                    if on_unmatched is not None:
+                        on_unmatched(candidate)
+                    prefix = prefix[frame_end:]
+                del self.buf[: start + expected_length]
+                return response
+
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                self._report_unframed(data, "unframed_timeout")
+                self.buf.clear()
+                return b""
+
+            # Once the response header is present, wait for its full payload;
+            # valid CRCs inside the opaque payload are not separate frames.
+            if not data.startswith(expected_prefix) and (
+                time.perf_counter() - self.last >= self.gap
+            ):
+                frame = self._first_crc_frame(data)
+                if frame is not None:
+                    frame_start, frame_end, candidate = frame
+                    if frame_start:
+                        self._report_unframed(
+                            data[:frame_start], "prefix_before_crc_frame"
+                        )
+                    del self.buf[:frame_end]
+                    if on_unmatched is not None:
+                        on_unmatched(candidate)
+                    continue
+            time.sleep(max(0.001, self.char_time * 0.5))
 
 
 def now_iso() -> str:
@@ -658,7 +783,7 @@ class Downstream:
         fmt: str,
         *,
         min_cmd_period: float = 1.0,
-        rtimeout: float = 1.5,
+        rtimeout: float = 4.0,
         fc20_timeout: float = 3.0,
         events: Optional[EventHub] = None,
         forensic: ForensicCapture | None = None,
@@ -692,6 +817,7 @@ class Downstream:
             self.ser,
             self.char_time,
             capture=(self._capture_rx if forensic else None),
+            on_unframed=self._report_unframed_inverter,
         )
         self._io_lock = threading.Lock()
         self._queue_condition = threading.Condition()
@@ -801,6 +927,20 @@ class Downstream:
         """Register the destination for valid unsolicited inverter frames."""
         self._async_frame_handler = handler
 
+    def _report_unframed_inverter(self, data: bytes, reason: str) -> None:
+        """Observe and preserve inverter bytes without valid RTU framing."""
+        preview = data[:512]
+        self._capture_event(
+            "inverter_unframed_bytes",
+            role="WIRE",
+            source="INVERTER",
+            direction="inverter_to_shine",
+            reason=reason,
+            length=len(data),
+            preview_hex=preview.hex(),
+            preview_truncated=len(preview) != len(data),
+        )
+
     def _report_async_frame(self, request: bytes, frame: bytes) -> None:
         self._capture_event(
             "async_frame_observed",
@@ -832,8 +972,8 @@ class Downstream:
                 return len(frame) == 5
             return frame[1] == request[1] and len(frame) == 205 and frame[2] == 200
 
-        return self.framer.read_matching(
-            matches,
+        return self.framer.read_fc20_frame(
+            request,
             timeout=self.fc20_timeout,
             on_unmatched=lambda frame: self._report_async_frame(request, frame),
         )
@@ -974,7 +1114,11 @@ class Downstream:
         standard_modbus: bool,
     ) -> bytes:
         resp = b""
-        attempts = 2 if standard_modbus and is_retryable_standard_read(req) else 1
+        attempts = (
+            1
+            if source == "SHINE"
+            else 2 if standard_modbus and is_retryable_standard_read(req) else 1
+        )
         for attempt in range(attempts):
             if not self._ensure_serial():
                 break
@@ -1010,6 +1154,7 @@ class Downstream:
                     req,
                     timeout=self.rtimeout,
                     on_unmatched=lambda frame: self._report_async_frame(req, frame),
+                    allow_unit_zero_wildcard=source == "SHINE",
                 )
             elif req[1] == 0x20:
                 resp = self._read_fc20_response(req)
@@ -1018,7 +1163,7 @@ class Downstream:
                     lambda frame: (
                         crc_ok(frame)
                         and len(frame) >= 2
-                        and frame[0] == req[0]
+                        and (frame[0] == req[0] or (req[0] == 0 and frame[0] != 0))
                         and frame[1] in (req[1], req[1] | 0x80)
                     ),
                     timeout=self.rtimeout,
@@ -1033,7 +1178,7 @@ class Downstream:
             self._last_done = time.perf_counter()
             if resp:
                 self._consecutive_timeouts = 0
-            else:
+            elif standard_modbus:
                 self._consecutive_timeouts += 1
                 if self._consecutive_timeouts >= self._reopen_after_timeouts:
                     self._consecutive_timeouts = 0
@@ -1056,7 +1201,7 @@ class Downstream:
                 to="INVERTER",
                 source=source,
                 from_client=client,
-                timeout=self.rtimeout,
+                timeout=(self.fc20_timeout if req[1] == 0x20 else self.rtimeout),
             )
         if self.events:
             self.events.emit(
@@ -1087,15 +1232,15 @@ class _RefreshState:
 
 
 def native_min_6000tl_xh_plan() -> tuple[CachePolicy, ...]:
-    """Return only vendor-native blocks already validated for the live MIN."""
+    """Return vendor-native blocks with HA-friendly refresh intervals."""
     return (
-        CachePolicy(RegisterKey(3, 0, 125), "holding_0", 60.0, 90.0),
-        CachePolicy(RegisterKey(3, 180, 20), "holding_180", 60.0, 90.0),
-        CachePolicy(RegisterKey(3, 209, 15), "holding_209", 60.0, 90.0),
-        CachePolicy(RegisterKey(3, 3000, 125), "holding_3000", 15.0, 30.0),
-        CachePolicy(RegisterKey(4, 3000, 125), "input_3000", 15.0, 30.0),
-        CachePolicy(RegisterKey(4, 3125, 125), "input_3125", 15.0, 30.0),
-        CachePolicy(RegisterKey(4, 3250, 125), "input_3250", 120.0, 240.0),
+        CachePolicy(RegisterKey(3, 0, 125), "holding_0", 300.0, 600.0),
+        CachePolicy(RegisterKey(3, 180, 20), "holding_180", 300.0, 600.0),
+        CachePolicy(RegisterKey(3, 209, 15), "holding_209", 300.0, 600.0),
+        CachePolicy(RegisterKey(3, 3000, 125), "holding_3000", 180.0, 360.0),
+        CachePolicy(RegisterKey(4, 3000, 125), "input_3000", 120.0, 240.0),
+        CachePolicy(RegisterKey(4, 3125, 125), "input_3125", 120.0, 240.0),
+        CachePolicy(RegisterKey(4, 3250, 125), "input_3250", 300.0, 600.0),
     )
 
 
@@ -1103,7 +1248,10 @@ class CacheGatewayService:
     """Serve TCP and Shine reads from one cache backed by ``Downstream``."""
 
     _ON_DEMAND_MAX_AGE = 5.0
+    _NON_SHINE_MAX_AGE = 180.0
     _WAIT_TIMEOUT = 8.0
+    _SHINE_PREFETCH_LEAD = 3.0
+    _SHINE_PREFETCH_FRESH_MARGIN = 1.0
 
     def __init__(
         self,
@@ -1111,6 +1259,7 @@ class CacheGatewayService:
         *,
         events: EventHub | None = None,
         policies: tuple[CachePolicy, ...] | None = None,
+        predictive_prefetch: bool = False,
     ) -> None:
         self.downstream = downstream
         self.events = events
@@ -1119,6 +1268,9 @@ class CacheGatewayService:
         self.coordinator = PollCoordinator(self.cache, max_age=self._ON_DEMAND_MAX_AGE)
         self.policies = policies or native_min_6000tl_xh_plan()
         self._policy_by_key = {policy.key: policy for policy in self.policies}
+        self.predictive_prefetch = predictive_prefetch
+        self.shine_pattern = ShinePatternObserver(jitter_tolerance=0.75)
+        self._prefetched_due: dict[PatternKey, float] = {}
         self._lock = threading.Lock()
         self._inflight: dict[RegisterKey, _RefreshState] = {}
         self._stop = threading.Event()
@@ -1138,6 +1290,34 @@ class CacheGatewayService:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def observe_shine_request(
+        self, request: bytes, *, at: float | None = None
+    ) -> None:
+        """Learn the native block timing used by the physical Shine."""
+        key = self._key_from_request(request)
+        if key is None:
+            return
+        policy = self._policy_for(key)
+        if policy is None:
+            return
+        physical_key = policy.key
+        pattern_key = PatternKey(
+            physical_key.function,
+            physical_key.start,
+            physical_key.count,
+        )
+        observed_at = time.monotonic() if at is None else at
+        self.shine_pattern.observe(pattern_key, at=observed_at)
+        self._emit(
+            "shine_pattern_observed",
+            role="INFO",
+            source="SHINE",
+            function=physical_key.function,
+            start=physical_key.start,
+            count=physical_key.count,
+            sequence_length=len(self.shine_pattern.history),
+        )
 
     @staticmethod
     def _key_from_request(request: bytes) -> RegisterKey | None:
@@ -1177,12 +1357,47 @@ class CacheGatewayService:
         policy = self._policy_for(key)
         return policy.key if policy is not None else key
 
+    def _physical_keys(self, key: RegisterKey) -> tuple[RegisterKey, ...]:
+        """Return the native blocks that cover a requested range."""
+        candidates = sorted(
+            (
+                policy.key
+                for policy in self.policies
+                if policy.key.function == key.function
+                and policy.key.start < key.end
+                and key.start < policy.key.end
+            ),
+            key=lambda candidate: candidate.start,
+        )
+        remaining = key.start
+        selected: list[RegisterKey] = []
+        for candidate in candidates:
+            if candidate.start > remaining:
+                break
+            if candidate.end <= remaining:
+                continue
+            selected.append(candidate)
+            remaining = min(key.end, candidate.end)
+            if remaining == key.end:
+                return tuple(selected)
+        return (key,)
+
     def _max_age(self, key: RegisterKey, *, client: str) -> float:
         policy = self._policy_for(key)
         if policy is None:
+            physical_keys = self._physical_keys(key)
+            if physical_keys != (key,):
+                policy_ages = tuple(
+                    self._policy_by_key[physical_key].max_age
+                    for physical_key in physical_keys
+                )
+                max_age = min(policy_ages)
+                if client != "SHINE":
+                    return max(max_age, self._NON_SHINE_MAX_AGE)
+                return max_age
             return self._ON_DEMAND_MAX_AGE
         if client != "SHINE":
-            return max(policy.max_age, 60.0)
+            return max(policy.max_age, self._NON_SHINE_MAX_AGE)
         return policy.max_age
 
     def _wire_read_request(self, key: RegisterKey) -> bytes:
@@ -1269,8 +1484,16 @@ class CacheGatewayService:
         force_refresh: bool = False,
     ) -> tuple[CachedRead | None, str | None]:
         max_age = self._max_age(key, client=client)
+        physical_keys = self._physical_keys(key)
+        allow_composed = len(physical_keys) > 1
         with self._lock:
-            cached = self.cache.read(key, now=now, max_age=max_age)
+            cached = self.cache.read(
+                key,
+                now=now,
+                max_age=max_age,
+                allow_composed=allow_composed,
+                allow_mixed_snapshots=allow_composed,
+            )
         if cached is not None and not force_refresh:
             self._emit(
                 "cache_hit",
@@ -1286,7 +1509,6 @@ class CacheGatewayService:
             )
             return cached, None
 
-        physical_key = self._physical_key(key)
         self._emit(
             "cache_miss",
             role="INFO",
@@ -1295,57 +1517,72 @@ class CacheGatewayService:
             function=key.function,
             start=key.start,
             count=key.count,
-            physical_start=physical_key.start,
-            physical_count=physical_key.count,
+            physical_blocks=[
+                {"start": block.start, "count": block.count}
+                for block in physical_keys
+            ],
         )
-        with self._lock:
-            state = self._inflight.get(physical_key)
-            owner = state is None
+        for physical_key in physical_keys:
+            with self._lock:
+                block_cached = self.cache.read(
+                    physical_key, now=now, max_age=max_age
+                )
+                state = self._inflight.get(physical_key)
+                needs_refresh = force_refresh or block_cached is None
+                owner = needs_refresh and state is None
+                if owner:
+                    state = _RefreshState(threading.Event())
+                    self._inflight[physical_key] = state
+                elif needs_refresh and state is not None:
+                    self._emit(
+                        "cache_coalesced",
+                        role="INFO",
+                        client=client,
+                        source=source,
+                        function=key.function,
+                        start=key.start,
+                        count=key.count,
+                    )
+
+            if not needs_refresh:
+                continue
             if owner:
-                state = _RefreshState(threading.Event())
-                self._inflight[physical_key] = state
-            else:
-                self._emit(
-                    "cache_coalesced",
-                    role="INFO",
-                    client=client,
-                    source=source,
-                    function=key.function,
-                    start=key.start,
-                    count=key.count,
-                )
+                try:
+                    state.snapshot = self._refresh(
+                        physical_key,
+                        client=client,
+                        source=source,
+                        reason="cache_miss_or_stale",
+                    )
+                except Exception as exc:
+                    state.error = str(exc)
+                    self._emit(
+                        "cache_physical_refresh_failed",
+                        role="ERROR",
+                        client=client,
+                        source=source,
+                        function=physical_key.function,
+                        start=physical_key.start,
+                        count=physical_key.count,
+                        error=state.error,
+                    )
+                finally:
+                    with self._lock:
+                        self._inflight.pop(physical_key, None)
+                        state.event.set()
+            elif not state.event.wait(self._WAIT_TIMEOUT):
+                return None, "cache refresh wait timeout"
+            if state.error:
+                return None, state.error
 
-        if owner:
-            try:
-                state.snapshot = self._refresh(
-                    physical_key,
-                    client=client,
-                    source=source,
-                    reason="cache_miss_or_stale",
-                )
-            except Exception as exc:
-                state.error = str(exc)
-                self._emit(
-                    "cache_physical_refresh_failed",
-                    role="ERROR",
-                    client=client,
-                    source=source,
-                    function=physical_key.function,
-                    start=physical_key.start,
-                    count=physical_key.count,
-                    error=state.error,
-                )
-            finally:
-                with self._lock:
-                    self._inflight.pop(physical_key, None)
-                    state.event.set()
-        elif not state.event.wait(self._WAIT_TIMEOUT):
-            return None, "cache refresh wait timeout"
-
-        if state.error:
-            return None, state.error
         with self._lock:
-            cached = self.cache.read(key, now=time.monotonic(), max_age=max_age)
+            cached = self.cache.read(
+                key,
+                now=time.monotonic(),
+                max_age=max_age,
+                allow_composed=allow_composed,
+                allow_mixed_snapshots=allow_composed,
+            )
         if cached is None:
             return None, "refresh did not produce a usable snapshot"
         return cached, None
@@ -1361,11 +1598,14 @@ class CacheGatewayService:
         key = self._key_from_request(request)
         if key is None or not 1 <= key.count <= 125:
             return GatewayResult("failed", client, reason="invalid_standard_read")
+        request_now = time.monotonic() if now is None else now
+        if client == "SHINE":
+            self.observe_shine_request(request, at=request_now)
         cached, error = self._read_words(
             key,
             client=client,
             source=source,
-            now=time.monotonic() if now is None else now,
+            now=request_now,
         )
         if cached is None:
             return GatewayResult("failed", client, reason=error or "read failed")
@@ -1376,6 +1616,71 @@ class CacheGatewayService:
             response=build_read_response(request, cached.words),
             reason="cache",
         )
+
+    def _run_predictive_prefetch(self, now: float) -> None:
+        if not self.predictive_prefetch:
+            return
+        for prediction in self.shine_pattern.due_predictions(
+            now=now,
+            lead=self._SHINE_PREFETCH_LEAD,
+        ):
+            key = RegisterKey(
+                prediction.key.function,
+                prediction.key.start,
+                prediction.key.count,
+            )
+            with self._lock:
+                previous_due = self._prefetched_due.get(prediction.key)
+                if previous_due is not None and prediction.due_at <= previous_due:
+                    continue
+                self._prefetched_due[prediction.key] = prediction.due_at
+                cached = self.cache.read(
+                    key,
+                    now=now,
+                    max_age=self._policy_by_key[key].max_age,
+                )
+            seconds_until_due = max(0.0, prediction.due_at - now)
+            if cached is not None and cached.age <= (
+                seconds_until_due + self._SHINE_PREFETCH_FRESH_MARGIN
+            ):
+                self._emit(
+                    "shine_prefetch_skipped",
+                    role="INFO",
+                    source="PREDICTIVE",
+                    function=key.function,
+                    start=key.start,
+                    count=key.count,
+                    reason="already_fresh",
+                    age_ms=round(cached.age * 1000, 3),
+                    due_in_ms=round(seconds_until_due * 1000, 3),
+                )
+                continue
+            self._emit(
+                "shine_prefetch_scheduled",
+                role="INFO",
+                source="PREDICTIVE",
+                function=key.function,
+                start=key.start,
+                count=key.count,
+                confidence=prediction.confidence,
+                due_in_ms=round(seconds_until_due * 1000, 3),
+            )
+            _, error = self._read_words(
+                key,
+                client="PREFETCH",
+                source="PREDICTIVE",
+                now=now,
+                force_refresh=True,
+            )
+            self._emit(
+                "shine_prefetch_complete",
+                role="INFO" if error is None else "WARN",
+                source="PREDICTIVE",
+                function=key.function,
+                start=key.start,
+                count=key.count,
+                error=error,
+            )
 
     def handle_shine_passthrough(
         self,
@@ -1391,7 +1696,10 @@ class CacheGatewayService:
             request,
             client=client,
             source=source,
-            standard_modbus=standard_response_spec(request) is not None,
+            # Growatt's unit-0 discovery receives a unit-1 response.
+            standard_modbus=(
+                standard_response_spec(request) is not None and request[0] != 0
+            ),
         )
         if response:
             written_key = self._written_holding_key(request)
@@ -1504,6 +1812,7 @@ class CacheGatewayService:
 
     def _run_poller(self) -> None:
         while not self._stop.is_set():
+            self._run_predictive_prefetch(time.monotonic())
             for policy in self.policies:
                 if self._stop.is_set():
                     return
@@ -1762,6 +2071,29 @@ class ShineEndpoint(threading.Thread):
         self._write_lock = threading.Lock()
         self.ds.set_async_frame_handler(self._forward_async_frame)
 
+    def _report_unframed(self, data: bytes, reason: str) -> None:
+        """Record Shine serial bytes that do not form a CRC-valid RTU frame."""
+        preview = data[:512]
+        if self.forensic:
+            self.forensic.record_shine(
+                data,
+                direction="shine_to_broker_unframed",
+                disposition="observed_only",
+                event="shine_unframed_bytes",
+            )
+        if self.events:
+            self.events.emit(
+                event="shine_unframed_bytes",
+                classification="possibly_non_modbus",
+                role="WIRE",
+                source="SHINE",
+                direction="shine_to_broker",
+                reason=reason,
+                length=len(data),
+                preview_hex=preview.hex(),
+                preview_truncated=len(preview) != len(data),
+            )
+
     def _forward_async_frame(self, frame: bytes) -> None:
         """Forward unsolicited inverter frames to the physical Shine."""
         try:
@@ -1834,7 +2166,12 @@ class ShineEndpoint(threading.Thread):
             assert last_error is not None
             raise last_error
         bits_per_char = 1 + databits + stop + (0 if parity == "N" else 1)
-        self.framer = RTUFramer(self.ser, bits_per_char / self.baud)
+        self.framer = RTUFramer(
+            self.ser,
+            bits_per_char / self.baud,
+            on_unframed=self._report_unframed,
+            resync=False,
+        )
         self._online = True
         if self.virtual_adapter is not None:
             self.virtual_adapter.observe_hotplug()
@@ -1907,10 +2244,6 @@ class ShineEndpoint(threading.Thread):
                     disposition == "forwarded"
                     and standard_response_spec(req) is not None
                 )
-                if self.policy == "transparent":
-                    # The dongle owns this serial leg; preserve the inverter's
-                    # raw response shape instead of applying TCP unit matching.
-                    standard_request = False
 
                 if self.forensic:
                     self.forensic.record_shine(
@@ -2192,7 +2525,13 @@ def main():
     )
     ap.add_argument(
         "--mode",
-        choices=("legacy", "cache", "cache+shine"),
+        choices=(
+            "legacy",
+            "cache",
+            "cache+shine",
+            "cache+shine-direct",
+            "cache+shine-predictive",
+        ),
         default="legacy",
         help="Broker data-plane mode; cache modes are opt-in",
     )
@@ -2221,7 +2560,7 @@ def main():
         "--min-period", type=float, default=1.0, help="Min seconds between transactions"
     )
     ap.add_argument(
-        "--rtimeout", type=float, default=1.5, help="RTU read timeout seconds"
+        "--rtimeout", type=float, default=4.0, help="RTU read timeout seconds"
     )
     ap.add_argument(
         "--fc20-timeout",
@@ -2259,8 +2598,12 @@ def main():
     )
     args = ap.parse_args()
 
-    if args.mode == "cache+shine" and not args.shine:
-        ap.error("cache+shine mode requires --shine")
+    if args.mode in {
+        "cache+shine",
+        "cache+shine-direct",
+        "cache+shine-predictive",
+    } and not args.shine:
+        ap.error(f"{args.mode} mode requires --shine")
     if args.mode != "legacy" and args.shine_policy == "raw-transparent":
         ap.error("raw-transparent Shine mode is only available in legacy mode")
 
@@ -2305,6 +2648,9 @@ def main():
     virtual_adapter = None
     shine = None
     raw_shine = None
+    effective_shine_policy = (
+        "transparent" if args.mode == "cache+shine-direct" else args.shine_policy
+    )
     if args.shine and args.shine_policy == "raw-transparent":
         raw_shine = RawSerialBridge(
             args.inverter,
@@ -2330,11 +2676,19 @@ def main():
             shine_burst=args.shine_burst,
         )
         if args.mode != "legacy":
-            gateway = CacheGatewayService(ds, events=events)
-            # With a real Shine, its polling cadence is the authoritative
-            # source of demand; HA reads still refresh the cache on a miss.
-            gateway.start(background=args.mode != "cache+shine")
-            if args.mode == "cache+shine":
+            gateway = CacheGatewayService(
+                ds,
+                events=events,
+                predictive_prefetch=args.mode == "cache+shine-predictive",
+            )
+            # Predictive mode learns the real Shine cadence; HA reads use the
+            # background native-block cache instead of driving physical reads.
+            gateway.start(
+                background=args.mode
+                not in {"cache+shine", "cache+shine-direct"}
+                or args.mode == "cache+shine-predictive"
+            )
+            if args.mode in {"cache+shine", "cache+shine-predictive"}:
                 virtual_adapter = ShineVirtualInverterAdapter(
                     gateway.coordinator,
                     discovery_profiles=(min_6000tl_xh_discovery_profile(),),
@@ -2368,7 +2722,7 @@ def main():
             ds,
             events=events,
             forensic=forensic,
-            policy=args.shine_policy,
+            policy=effective_shine_policy,
             virtual_adapter=virtual_adapter,
         )
         shine.start()

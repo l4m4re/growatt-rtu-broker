@@ -1,6 +1,6 @@
 # HA-DEV-3B — static reverse engineering of stock ShineWiFi-X firmware
 
-Date: 2026-09-08
+Date: 2026-09-09
 Scope: static analysis only; stock ShineWiFi-X-compatible ESP8266 images
 Disposition: **GREEN WITH FOLLOW-UP**
 
@@ -87,6 +87,8 @@ The scanner deliberately labels constants as locations only. It does not claim
 that a `0x007d` hit is a Modbus count or that an isolated `0x20` byte is FC20.
 The static Xtensa review used Debian's `binutils-xtensa-lx106` and
 `xtensa-lx106-elf-objdump`; the disassembly was generated outside Git.
+The follow-up Ghidra project was also kept outside Git. The raw application
+mapping used for the recovered call paths is VMA `0x40200000`.
 
 ## 4. Strings and metadata
 
@@ -217,7 +219,7 @@ the first normal live request **STRONG_CORRELATION**.
 | H180 | FC03 | 180 | 20 | **PROVEN_LIVE** only in current evidence | no direct static constructor isolated |
 | H0 | FC03 | 0 | 125 | **PROVEN_LIVE** only in current evidence | no direct static constructor isolated |
 | I3250 | FC04 | 3250 | 125 | **PROVEN_LIVE** only in current evidence | no direct static constructor isolated |
-| FC20 | FC20 | 0 | 100 | **PROVEN_LIVE** only | no unambiguous static FC20 path |
+| FC20 | FC20 | 0 | 100 | **PROVEN_LIVE**; static 80-word path recovered | live 100-word range remains version/profile-specific |
 
 The static code contains repeated 1000 ms waits and retry loops. It does not
 prove the observed approximately two-second H43 cadence over hours. The
@@ -230,16 +232,65 @@ The live evidence remains clear: Shine-originated `01 20 00 00 00 64 81 e6`
 receives a CRC-valid `01 20 c8` response with a 200-byte payload. That is
 **PROVEN_LIVE** and is already losslessly documented by HA-DEV-2D.
 
-In the supplied stock images, the exact request prefix `01 20 00 00 00 64`
-does not occur, there is no `FC20` string, and no short static routine was
-isolated that checks a 200-byte response as an FC20-specific object. Generic
-frame routines and dynamic function/register fields may still support it, but
-this analysis cannot prove that. FC20 is therefore **UNKNOWN** as stock-binary
-source code and remains suitable for the broker only as an opaque, CRC-checked
-cache/replay object.
+The first pass did not recognise the dynamic path. A follow-up Ghidra analysis
+of the same supplied stock image recovered it:
+
+* `FUN_40245aa0` dispatches an inverter operation descriptor with opcode
+  `0x20` to `FUN_40243ba0`.
+* `FUN_40243ba0` constructs a higher-level cloud/report object and reserves an
+  `0xa0`-byte FC20 payload at offset `0x24`.
+* It calls `FUN_40247a1c`, which explicitly writes function byte `0x20`, builds
+  the inclusive start/count request, waits for a response, validates its CRC,
+  and copies the response payload into the report object.
+* The statically reachable example requests start `0` through `0x4f`, i.e. 80
+  words. The live 3.1.0.5 capture requests 100 words. This is consistent with
+  a version/profile-dependent range and is why the live count must not be
+  generalized from the older image.
+
+Therefore FC20 handling is now **PROVEN_IN_STOCK_IMAGE** for the supplied
+image, and its inclusion in a cloud telemetry/report object is also proven for
+that path. The exact 100-word layout and semantics remain separate questions;
+the broker should continue to treat the live object as opaque, length- and
+CRC-checked data until a version-matched map is established.
 
 Nothing in the binary or live FC20 capture establishes that FC20 is a direct
 DDSU666 proxy.
+
+## 6a. Persistent re-upload storage and the five-minute question
+
+The image contains a separate, explicit persistent backlog subsystem. The
+strings `IOT_ESP_SPI_FLASH_ReUploadData_Read` and
+`IOT_ESP_SPI_FLASH_ReUploadData_Write` resolve in Ghidra to
+`FUN_40240abc` and `FUN_4024091c`.
+
+The writer and reader implement a CRC-protected circular SPI-flash store:
+
+* the configured region starts at `0x00100000` and ends at `0x00500000`;
+* records advance in 256-byte units and wrap at the end of the region;
+* the reader requires a valid `01 ff` record marker, checks the requested
+  length and payload CRC, checks the embedded 10-byte identity field, and then
+  advances the read pointer;
+* the writer stores an eight-byte record header, the payload, and its CRC, then
+  advances the write pointer; rollover and full-region handling are explicit.
+
+The scheduler calls the writer from the data staging path at `0x40239934`
+and the reader at `0x4023995d`, when the re-upload state is enabled. This is
+strong static evidence for a Shine-side offline cloud backlog, rather than a
+buffer that exists only in the broker or portal.
+
+The FC20 response is definitely embedded in the `FUN_40243ba0` cloud/report
+object before network transmission. However, the writer path recovered here
+is passed the separate staging buffer at `0x3fff43a0`; that buffer is also used
+by the ordinary register-report builder. The current static evidence therefore
+does **not yet prove** that the exact FC20 bytes are copied into the SPI-flash
+ring on every five-minute sample. It proves the two mechanisms exist and that
+FC20 feeds a report object, but the final association between that object and
+the persistent ring remains **UNKNOWN**.
+
+Likewise, no unambiguous five-minute timer constant was recovered in this
+path. The observed portal backlog is consistent with the re-upload ring, but
+the cadence and ownership of each stored record still require correlation of
+the long off-cloud capture with the matching post-reconnect upload traffic.
 
 ## 7. H188 / FC06
 
@@ -288,8 +339,9 @@ live firmware is the same binary:
 * H209 FC03 address/count match the stock binary's isolated constructor.
 * Live native pages I3000/I3125/I3250 use 125 words, matching the stock
   profile descriptor's 3000/3125/125 values.
-* Live FC20 framing is repeatable, but stock static FC20 handling was not
-  recovered.
+* Live FC20 framing is repeatable, and a dynamic stock-image FC20 handling path
+  is now recovered; the supplied image's 80-word example is not the live
+  3.1.0.5 100-word range.
 * Live FC03 H180/H0 and FC04 pages are not all statically reconstructed here.
 * Live Shine timing is approximately 1.5 seconds in the healthy raw capture;
   stock code visibly contains 1-second waits but does not establish that exact
@@ -392,6 +444,7 @@ Useful, reproducible stock-binary evidence was recovered and published. The
 discovery builder, device-type/profile path, 3000/3125/125-word native profile,
 H209 constructor, CRC handling, and independent-looking WiFi/cloud/inverter
 areas materially support the cache-centric broker design. FC20 semantics,
-complete stock poll ordering, exact H43 acceptance/unit checks, and H188 trigger
-logic remain only partially resolved and require later bounded live/replay
-work—not firmware flashing.
+the exact version-matched 100-word range, the association between FC20 report
+objects and the persistent re-upload ring, complete stock poll ordering, exact
+H43 acceptance/unit checks, and H188 trigger logic remain only partially
+resolved and require later bounded live/replay work—not firmware flashing.
