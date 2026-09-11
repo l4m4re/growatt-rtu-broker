@@ -72,3 +72,29 @@ def test_scheduler_prefers_shine_and_then_serves_production() -> None:
     assert scheduler._select_request().source == "SHINE"
     scheduler._consecutive_shine = 1
     assert scheduler._select_request().source == "PROD_TCP"
+
+
+def test_predictive_refresh_yields_to_a_pending_shine_request() -> None:
+    scheduler = Downstream.__new__(Downstream)
+    scheduler._pending = [
+        DownstreamRequest(
+            request=b"predictive",
+            client="PREFETCH",
+            source="PREDICTIVE",
+            standard_modbus=True,
+            queued_ns=1,
+            done=threading.Event(),
+        ),
+        DownstreamRequest(
+            request=b"shine",
+            client="SHINE",
+            source="SHINE",
+            standard_modbus=True,
+            queued_ns=2,
+            done=threading.Event(),
+        ),
+    ]
+    scheduler._shine_burst = 8
+    scheduler._consecutive_shine = 0
+
+    assert scheduler._select_request().source == "SHINE"

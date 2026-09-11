@@ -126,12 +126,17 @@ Run the production gateway against hardware:
 
 ```bash
 growatt-broker \
-  --inverter /dev/ttyUSB0 \
-  --shine /dev/ttyUSB1 \
-  --baud 9600 --bytes 8E1 \
+  --inverter /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 \
+  --baud 115200 --bytes 8N1 \
   --tcp 0.0.0.0:5020 \
   --min-period 1.0 --rtimeout 1.5
 ```
+
+This is the no-Shine legacy path. Add `--shine
+/dev/serial/by-id/usb-04e2_1410-if00-port0` only for a mode that explicitly
+uses the physical Shine link (`cache+shine`, `cache+shine-direct`, or
+`cache+shine-predictive`). Use stable `/dev/serial/by-id` paths rather than
+`ttyUSB` numbers.
 
 See [`docker-compose.yml`](docker-compose.yml) for the containerised equivalent.
 
@@ -148,7 +153,7 @@ See [`docker-compose.yml`](docker-compose.yml) for the containerised equivalent.
 2. Populate an `.env` file next to `docker-compose.yml` to describe your hardware and network bindings:
    ```ini
    INV_DEV=/dev/serial/by-path/<inverter-port>
-   SHINE_DEV=/dev/serial/by-path/<shinewifi-port>
+   SHINE_DEV=/dev/serial/by-id/usb-04e2_1410-if00-port0  # optional unless using cache+shine*
    BAUD=115200
    BYTES=8N1
    TCP_BIND=0.0.0.0:5020      # Home Assistant / primary Modbus TCP
@@ -162,7 +167,8 @@ See [`docker-compose.yml`](docker-compose.yml) for the containerised equivalent.
    ```
 3. Run `docker compose up -d`.
 
-With this configuration the broker speaks 115200 baud, 8N1 on both the inverter and ShineWiFi serial links, serves Modbus TCP
+With this configuration the broker speaks 115200 baud, 8N1 on the Pi-visible
+inverter and optional Shine serial links, serves Modbus TCP
 for Home Assistant on port `5020`, exposes a second TCP listener on `5021` for ad-hoc tools, and mirrors every frame as a JSONL
 stream on port `5700` for remote sniffing. Logs are suppressed on disk (`LOG_PATH=-`) but still available live through the
 sniff stream. All ports are bound on the host IP because the compose file uses `network_mode: host`. See

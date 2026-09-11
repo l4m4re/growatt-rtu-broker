@@ -17,13 +17,17 @@ was restored and dev-HA again received valid inverter responses.
 
 ## Device and wiring
 
-The live host has two CH340-class USB serial adapters. Their Linux numbering
-changed after the power-cycle, so tty numbers are not used as identity:
+The live topology contains two CH340-class converters in the inverter USB
+tunnel, but only the Raspberry-Pi-side converter is visible as a Pi USB serial
+device. The separately attached stock ShineWiFi-X is an Exar/XR21V1410-type
+USB serial device (`04e2:1410`), not the second CH340 tunnel converter. Linux
+minor numbers changed after the power-cycle, so tty numbers are not used as
+identity:
 
 | role | stable path | observed tty after power-cycle |
 |---|---|---|
 | inverter | `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0` | `ttyUSB0` |
-| ShineWiFi-X | `/dev/serial/by-id/usb-04e2_1410-if00-port0` | `ttyUSB1` |
+| ShineWiFi-X (Exar/XR21V1410) | `/dev/serial/by-id/usb-04e2_1410-if00-port0` | `ttyUSB1` |
 
 Both candidate serial legs were configured as `115200 8N1`, based on the
 fixed-speed Shine USB converter and the established inverter configuration.

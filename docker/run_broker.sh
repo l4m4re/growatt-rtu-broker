@@ -16,14 +16,31 @@ DOCKER_ARGS=(--name growatt-broker --restart unless-stopped)
 # A mounted /dev is required when a USB adapter may disappear and re-enumerate
 # while this container stays alive. Use stable /dev/serial/by-id paths in .env.
 HOTPLUG_DEVICES="${HOTPLUG_DEVICES:-1}"
+BROKER_MODE="${BROKER_MODE:-legacy}"
 INVERTER_ARG=/dev/inverter
-SHINE_ARG=/dev/shine
+SHINE_ARG=
+SHINE_CONFIGURED=0
+
+if [ -n "${SHINE_DEV:-}" ]; then
+  SHINE_CONFIGURED=1
+fi
+
+case "${BROKER_MODE}" in
+  cache+shine|cache+shine-direct|cache+shine-predictive)
+    if [ "${SHINE_CONFIGURED}" -ne 1 ]; then
+      echo "Error: ${BROKER_MODE} requires SHINE_DEV"
+      exit 2
+    fi
+    ;;
+esac
 
 if [ "${HOTPLUG_DEVICES}" = "1" ]; then
   echo "Info: enabling USB hot-plug recovery by mounting /dev"
   DOCKER_ARGS+=(--privileged -v /dev:/dev)
   INVERTER_ARG="${INV_DEV:-/dev/serial/by-id/inverter}"
-  SHINE_ARG="${SHINE_DEV:-/dev/serial/by-id/shine}"
+  if [ "${SHINE_CONFIGURED}" -eq 1 ]; then
+    SHINE_ARG="${SHINE_DEV}"
+  fi
 fi
 
 # With hot-plug mode disabled, retain the older explicit-device deployment.
@@ -38,9 +55,9 @@ if [ "${HOTPLUG_DEVICES}" != "1" ]; then
     MISSING_DEVICE=1
   fi
 
-  if [ -n "${SHINE_DEV:-}" ] && [ -e "${SHINE_DEV}" ]; then
+  if [ "${SHINE_CONFIGURED}" -eq 1 ] && [ -e "${SHINE_DEV}" ]; then
     DOCKER_ARGS+=(--device="${SHINE_DEV}:/dev/shine:rw")
-  else
+  elif [ "${SHINE_CONFIGURED}" -eq 1 ]; then
     echo "Info: shine device '${SHINE_DEV:-}' not present; broker can be started hot-pluggable"
     MISSING_DEVICE=1
   fi
@@ -51,7 +68,9 @@ if [ "${MISSING_DEVICE}" -eq 1 ] && [ "${HOTPLUG_DEVICES}" != "1" ]; then
   echo "      (bind-mounting /dev; use stable /dev/serial/by-id paths)."
   DOCKER_ARGS+=(--privileged -v /dev:/dev)
   INVERTER_ARG="${INV_DEV:-/dev/serial/by-id/inverter}"
-  SHINE_ARG="${SHINE_DEV:-/dev/serial/by-id/shine}"
+  if [ "${SHINE_CONFIGURED}" -eq 1 ]; then
+    SHINE_ARG="${SHINE_DEV}"
+  fi
 fi
 
 # Port mappings
@@ -80,11 +99,15 @@ fi
 
 # Build the full docker run command (for visibility)
 DOCKER_CMD=(docker run -d "${DOCKER_ARGS[@]}" growatt-rtu-broker:local \
-  growatt-broker --inverter "${INVERTER_ARG}" --shine "${SHINE_ARG}" \
+  growatt-broker --inverter "${INVERTER_ARG}" \
     --baud "${INV_BAUD:-${BAUD:-115200}}" --bytes "${INV_BYTES:-${BYTES:-8N1}}" \
     --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
     --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" --log "${LOG_PATH:--}" \
-    --mode "${BROKER_MODE:-legacy}")
+    --mode "${BROKER_MODE}")
+
+if [ "${SHINE_CONFIGURED}" -eq 1 ]; then
+  DOCKER_CMD+=(--shine "${SHINE_ARG}")
+fi
 
 echo "Prepared docker run command:"
 printf ' %s' "${DOCKER_CMD[@]}"

@@ -134,12 +134,16 @@ what the current live predictive container is running.
 
 ### Shine hot-plug and startup behavior
 
-The two CH340-class adapters can re-enumerate with different `ttyUSB` numbers.
-The broker's stable by-id paths are consequently part of the operational
-contract. During the raw-transparent experiment the Shine path disappeared
-and returned while the broker stayed alive; the broker logged open failures,
-closed the stale descriptor, and reopened the device after hot-plug without a
-broker restart.
+The inverter USB tunnel contains two CH340-class converters: one on the RPi
+side and one inside the inverter. Only the RPi-side converter is a Pi-visible
+USB serial device. The separately attached stock ShineWiFi-X uses the
+Exar/XR21V1410-type adapter `04e2:1410`; it is not the second CH340 tunnel
+converter. The Pi-visible devices can re-enumerate with different `ttyUSB`
+numbers, so the broker's stable by-id paths are part of the operational
+contract. During the raw-transparent experiment the Shine path disappeared and
+returned while the broker stayed alive; the broker logged open failures, closed
+the stale descriptor, and reopened the device after hot-plug without a broker
+restart.
 
 The stock Shine also emitted printable ESP8266 boot/debug data after restart,
 followed by binary data. In raw-transparent mode those bytes were forwarded;
@@ -226,7 +230,8 @@ following combinations were observed:
 One portal TOU change was observed as a direct Modbus write and read-back:
 
 ```text
-FC16, holding registers H3040-H3041, data 0x2000 0x0700
+FC0x10 (Write Multiple Registers), holding registers H3040-H3041,
+data 0x2000 0x0700
 ```
 
 The broker did not originate that write. This confirms that portal writes can

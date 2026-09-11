@@ -437,6 +437,28 @@ def test_gateway_reads_from_one_native_block_and_replays_subsets() -> None:
     assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
 
 
+def test_cache_gateway_reads_do_not_require_a_shine_client() -> None:
+    downstream = _FakeDownstream()
+    gateway = CacheGatewayService(downstream)
+
+    production = gateway.handle_standard_request(
+        add_crc(bytes.fromhex("01040bb80001")),
+        client="HA",
+        source="PROD_TCP",
+    )
+    development = gateway.handle_standard_request(
+        add_crc(bytes.fromhex("01040bcc0001")),
+        client="DEV",
+        source="DEV_TCP",
+    )
+
+    assert production.status == "served"
+    assert development.status == "served"
+    assert [request.hex() for request in downstream.requests] == [
+        "01040bb8007db22a"
+    ]
+
+
 def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
     downstream = _FakeDownstream()
     gateway = CacheGatewayService(downstream)

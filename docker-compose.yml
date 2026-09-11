@@ -1,6 +1,8 @@
 version: "3.8"
 services:
   broker:
+    # This compose example is the combined Shine profile. For no-Shine
+    # legacy/cache operation use docker/run_broker.sh or the CLI directly.
     build: .
     container_name: growatt-rtu-broker
     restart: unless-stopped

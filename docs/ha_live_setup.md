@@ -1,7 +1,8 @@
 # Home Assistant live deployment profile
 
-This guide captures the exact configuration used to run the live Growatt broker on a Home Assistant (HA) installation while
-simultaneously serving Home Assistant, a ShineWiFi dongle, and a developer laptop.
+This guide captures the exact configuration used to run the live Growatt broker
+on a Home Assistant (HA) installation while simultaneously serving Home
+Assistant, a ShineWiFi dongle, and a developer laptop.
 
 ## Goals
 
@@ -14,8 +15,24 @@ register discovery.
 
 ## Serial wiring and parameters
 
-Both serial legs (inverter and ShineWiFi) are configured at **115200 baud, 8 data bits, no parity, 1 stop bit (115k2 8N1)**. If
-the dongle is unplugged the broker will automatically retry and begin forwarding requests again once it reappears.
+The broker's Pi-visible serial endpoints are configured at **115200 baud, 8
+data bits, no parity, 1 stop bit (115k2 8N1)**. The inverter transport is a
+USB/RS485 tunnel:
+
+```text
+Pi CH340 USB↔RS485
+        ↕ RS485
+inverter-side CH340 USB↔RS485
+        ↕ USB
+Growatt inverter USB host port
+```
+
+The inverter's built-in RS485 ports remain occupied by the BMS and the
+external CHINT DDSU666 meter. The stock ShineWiFi-X is a separate Pi USB
+device, identified on this installation as Exar/XR21V1410 `04e2:1410`; it is
+not the second CH340 converter in the inverter tunnel. If the dongle is
+unplugged, the broker automatically retries and begins forwarding requests
+again once it reappears.
 
 You can discover the device paths from the HA OS shell with:
 
@@ -97,9 +114,9 @@ From the Advanced SSH & Web Terminal add-on, run `login` first to drop into the 
 
    2. Start the container, using the locally built image:
 
-      You can start the container directly (this will fail if one of the `--device` paths
-      does not exist), or use the included helper which omits missing devices so the
-      broker can be started before the Shine dongle is plugged in.
+      The direct command below is the combined Shine profile. For the no-Shine
+      `legacy` or `cache` profile, omit the Shine device/argument; the included
+      helper applies this distinction automatically and also supports hot-plug.
 
       ```bash
       # Direct run (will fail if devices are missing)
@@ -117,8 +134,8 @@ From the Advanced SSH & Web Terminal add-on, run `login` first to drop into the 
       ```
 
       ```bash
-      # Use the helper; it will source /share/growatt-rtu-broker/.env and skip missing devices
-  /share/growatt-rtu-broker/docker/run_broker.sh
+      # Use the helper; it sources .env and follows BROKER_MODE's Shine contract
+      /share/growatt-rtu-broker/docker/run_broker.sh
 
   Note: if the helper detects a missing device path it will start the container in a
   hot-plug mode by adding `--privileged` and bind-mounting `/dev` into the container.
@@ -128,7 +145,7 @@ From the Advanced SSH & Web Terminal add-on, run `login` first to drop into the 
       ```
 
    Notes:
-   - `INV_DEV` and `SHINE_DEV` come from `.env` and must be valid host device paths (check with `ls -l "$INV_DEV" "$SHINE_DEV"`).
+   - `INV_DEV` comes from `.env` and must be a valid host device path. `SHINE_DEV` is required only for `cache+shine*` modes (check configured paths with `ls -l`).
    - We source `.env` in the host shell so variables can be used for both host options (like `--device` and `-p`) and for the broker CLI flags.
    - If a container named `growatt-broker` already exists: `docker stop growatt-broker && docker rm growatt-broker`.
    - View logs: `docker logs -f growatt-broker`.

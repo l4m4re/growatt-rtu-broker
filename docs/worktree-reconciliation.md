@@ -27,16 +27,19 @@ The `HA-core/external` worktree is the newer development line and is now canonic
 
 ### Not identical and still worth remembering
 
-- `.env.example`: the standalone example made Shine optional and used `9600 8E1`; the external example requires Shine and defaults to `115200 8N1`, while allowing per-side overrides.
-- `scripts/run-ha.sh`: the standalone local change made Shine optional, conditionally mounted its device, and failed early when the inverter device could not be resolved. The external helper still requires `SHINE_DEV`, mounts it unconditionally, and falls back to the supplied path when resolution fails.
+- `.env.example`: the external example now makes Shine optional for `legacy` and `cache`, while `cache+shine*` modes require it; the default wiring remains `115200 8N1` with per-side overrides.
+- `docker/run_broker.sh`: the helper now mirrors the CLI contract, conditionally mounts/passes Shine, and fails early only when a selected `cache+shine*` mode lacks `SHINE_DEV`.
 
-The optional Shine behaviour is present in the external broker's Python entrypoint, but not consistently represented in its deployment helper and example environment. Before the standalone worktree is removed, either port that helper behaviour to the external copy or deliberately choose and document the mandatory-Shine deployment.
+The optional Shine behaviour is now represented consistently in the external
+broker's Python entrypoint, deployment helper, and example environment. Before
+the standalone worktree is removed, retain this reconciliation note and the
+hardware-specific settings recorded in the live deployment notes.
 
 ## Deletion checklist
 
 The standalone worktree contains no broker source file that was found to be newer or unique compared with the new canonical worktree. It can be archived/removed after:
 
-1. the `.env.example` and `scripts/run-ha.sh` choice above has been made;
+1. the `.env.example` and `docker/run_broker.sh` choice above has been recorded;
 2. any hardware-specific serial settings from the standalone copy have been recorded in the live deployment notes; and
 3. this reconciliation note is retained in the external repository history.
 

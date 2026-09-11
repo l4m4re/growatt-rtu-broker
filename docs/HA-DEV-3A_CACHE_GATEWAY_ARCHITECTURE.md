@@ -1,6 +1,8 @@
 # HA-DEV-3A cache-centric Growatt broker architecture
 
-Status: opt-in implementation; production remains on the legacy default.
+Status: opt-in implementation; production remains on the legacy default. The
+consolidated review and current live baseline are recorded in
+[`HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md`](HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md).
 
 ## Decision
 
@@ -12,7 +14,7 @@ discovery request is terminated locally for a validated device profile, and
 normal reads are answered from the same register cache used by HA.
 
 The cache implementation is enabled only with `--mode cache`, `--mode cache+shine`,
-or `--mode cache+shine-direct`. The default remains `--mode legacy`, so no
+`--mode cache+shine-direct`, or `--mode cache+shine-predictive`. The default remains `--mode legacy`, so no
 production
 mode changes merely by upgrading the image.
 
