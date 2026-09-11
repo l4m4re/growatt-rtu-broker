@@ -180,4 +180,4 @@ long-running capture was changed by this task. The two existing untracked
 research logs remain untracked and untouched.
 
 Implementation SHA: `78832e6`  
-Final SHA before remote publication: `78832e6`
+Final SHA before remote publication: `192438e`
