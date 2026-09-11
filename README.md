@@ -161,8 +161,8 @@ See [`docker-compose.yml`](docker-compose.yml) for the containerised equivalent.
    SNIFF_BIND=0.0.0.0:5700    # Read-only JSONL sniff stream
    MIN_PERIOD=1.0
    RTIMEOUT=1.5
-   PROD_TCP_WRITES=enabled   # policy-authorized FC06/FC10 only
-   DEV_TCP_WRITES=enabled    # policy-authorized FC06/FC10 only
+   PROD_TCP_WRITES=enabled   # forward all well-formed FC06/FC10 requests
+   DEV_TCP_WRITES=enabled    # forward all well-formed FC06/FC10 requests
    LOG_PATH=-                 # Disable on-disk logs for production HA
    HOTPLUG_DEVICES=1          # Follow USB serial re-enumeration in the container
    BROKER_MODE=legacy         # Keep the known-good path unless a canary is approved

@@ -4,7 +4,7 @@ import socket
 import threading
 import time
 
-from growatt_broker.broker import CacheGatewayService, TCPServer, add_crc
+from growatt_broker.broker import CacheGatewayService, TCPServer, WritePolicy, add_crc
 from growatt_broker.broker import native_min_6000tl_xh_plan
 from growatt_broker.cache_gateway import RegisterKey
 
@@ -73,7 +73,7 @@ def test_fc10_preserves_values_and_uses_native_read_back() -> None:
     assert downstream.requests[1] == add_crc(bytes.fromhex("01030bb8007d"))
 
 
-def test_write_policy_fails_closed_for_unknown_holding_range() -> None:
+def test_write_policy_allows_unknown_holding_range_when_enabled() -> None:
     downstream = WriteDownstream()
     gateway = CacheGatewayService(downstream)
     request = add_crc(bytes.fromhex("010600c80001"))
@@ -82,10 +82,26 @@ def test_write_policy_fails_closed_for_unknown_holding_range() -> None:
         request, client="TCP:dev", source="DEV_TCP"
     )
 
-    assert result.status == "failed"
-    assert result.reason == "write_denied"
-    assert result.response == add_crc(bytes.fromhex("018602"))
-    assert downstream.requests == []
+    assert result.status == "served"
+    assert downstream.requests[0] == request
+
+
+def test_write_policy_can_disable_each_tcp_source() -> None:
+    request = add_crc(bytes.fromhex("010600c80001"))
+    for source in ("PROD_TCP", "DEV_TCP"):
+        downstream = WriteDownstream()
+        policy = WritePolicy(
+            prod_tcp_enabled=source != "PROD_TCP",
+            dev_tcp_enabled=source != "DEV_TCP",
+        )
+        gateway = CacheGatewayService(downstream, write_policy=policy)
+
+        result = gateway.handle_write_request(request, client="TCP", source=source)
+
+        assert result.status == "failed"
+        assert result.reason == "write_denied"
+        assert result.response == add_crc(bytes.fromhex("018602"))
+        assert downstream.requests == []
 
 
 def test_write_timeout_returns_gateway_exception_without_fake_success() -> None:

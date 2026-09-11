@@ -1288,12 +1288,8 @@ def native_min_6000tl_xh_plan() -> tuple[CachePolicy, ...]:
 
 @dataclass(frozen=True)
 class WritePolicy:
-    """Explicit, profile-scoped holding-register write permissions."""
+    """Enable or disable physical FC06/FC10 writes per TCP source."""
 
-    allowed_ranges: tuple[RegisterKey, ...] = (
-        RegisterKey(3, 188, 1),
-        RegisterKey(3, 3038, 22),
-    )
     prod_tcp_enabled: bool = True
     dev_tcp_enabled: bool = True
 
@@ -1302,7 +1298,7 @@ class WritePolicy:
             return False
         if source == "DEV_TCP" and not self.dev_tcp_enabled:
             return False
-        return any(allowed.contains(key) for allowed in self.allowed_ranges)
+        return source in {"PROD_TCP", "DEV_TCP"}
 
 
 class CacheGatewayService:
@@ -1833,7 +1829,7 @@ class CacheGatewayService:
         client: str,
         source: str,
     ) -> GatewayResult:
-        """Execute one policy-authorized physical FC06/FC10 write."""
+        """Execute one enabled physical FC06/FC10 write."""
         if len(request) < 2 or request[1] not in (0x06, 0x10):
             return GatewayResult("failed", client, reason="unsupported_write_function")
         key = self._write_key(request)
@@ -3053,7 +3049,7 @@ def main():
             f"--{source}-tcp-writes",
             choices=("enabled", "disabled"),
             default="enabled",
-            help=f"Enable or disable policy-authorized FC06/FC10 writes on {source.upper()}_TCP",
+            help=f"Enable or disable FC06/FC10 writes on {source.upper()}_TCP",
         )
     ap.add_argument(
         "--log",
@@ -3171,10 +3167,7 @@ def main():
                 role="SYS",
                 prod_tcp=args.prod_tcp_writes == "enabled",
                 dev_tcp=args.dev_tcp_writes == "enabled",
-                allowed_ranges=[
-                    {"function": item.function, "start": item.start, "count": item.count}
-                    for item in WritePolicy().allowed_ranges
-                ],
+                all_fc06_fc10_registers=True,
             )
             # Predictive mode learns the real Shine cadence; HA reads use the
             # background native-block cache instead of driving physical reads.

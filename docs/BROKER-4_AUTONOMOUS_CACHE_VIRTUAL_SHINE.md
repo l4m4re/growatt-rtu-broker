@@ -115,24 +115,18 @@ labelled `physical_write_readback_failed`.
 
 Reads arriving while the write/read-back lease is unresolved wait for the
 sequence to finish; they are not served as fresh pre-write data. Physical
-exceptions, timeouts, malformed responses, denied ranges, and invalid physical
-responses produce meaningful Modbus exception responses. Asynchronous frames
-cannot satisfy a pending standard write.
+exceptions, timeouts, malformed responses, disabled sources, and invalid
+physical responses produce meaningful Modbus exception responses. Asynchronous
+frames cannot satisfy a pending standard write.
 
-The initial profile-scoped TCP write policy is deliberately narrow:
-
-```text
-FC03/H188       count 1
-FC03/H3038      count 22  (H3038..H3059)
-```
-
-Both `PROD_TCP` and `DEV_TCP` can be independently disabled with
-`--prod-tcp-writes disabled` and `--dev-tcp-writes disabled`. The compose and
-`docker/run_broker.sh` paths expose the same settings. This is transport
-capability, not a declaration that every address is semantically or live
-write-verified in the canonical register specification. The transparent Shine
-path remains able to forward its own reviewed/observed writes, with source
-tagging and shared serialization.
+When enabled, the TCP write path forwards every well-formed FC06 and FC10
+request to the inverter; there is no register allowlist. `PROD_TCP` and
+`DEV_TCP` can be independently disabled with `--prod-tcp-writes disabled` and
+`--dev-tcp-writes disabled`. The compose and `docker/run_broker.sh` paths expose
+the same settings. This is transport capability, not a declaration that every
+address is semantically or live write-verified in the canonical register
+specification. The transparent Shine path remains able to forward its own
+writes, with source tagging and shared serialization.
 
 ## Offline validation
 
