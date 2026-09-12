@@ -260,8 +260,8 @@ DDSU666 proxy.
 
 The image contains a separate, explicit persistent backlog subsystem. The
 strings `IOT_ESP_SPI_FLASH_ReUploadData_Read` and
-`IOT_ESP_SPI_FLASH_ReUploadData_Write` resolve in Ghidra to
-`FUN_40240abc` and `FUN_4024091c`.
+`IOT_ESP_SPI_FLASH_ReUploadData_Write` resolve in the 3.1.0.5 Ghidra image to
+`FUN_4023b1f0` and `FUN_4023b050`.
 
 The writer and reader implement a CRC-protected circular SPI-flash store:
 
@@ -273,24 +273,74 @@ The writer and reader implement a CRC-protected circular SPI-flash store:
 * the writer stores an eight-byte record header, the payload, and its CRC, then
   advances the write pointer; rollover and full-region handling are explicit.
 
-The scheduler calls the writer from the data staging path at `0x40239934`
-and the reader at `0x4023995d`, when the re-upload state is enabled. This is
-strong static evidence for a Shine-side offline cloud backlog, rather than a
-buffer that exists only in the broker or portal.
+The 3.1.0.5 inverter task initializes the ring at `0x40237c3d`, stages a
+record and calls the writer at `0x40237cbc`, and conditionally calls the reader
+at `0x40237ce5`, when the re-upload state is enabled. This is strong static
+evidence for a Shine-side offline cloud backlog, rather than a buffer that
+exists only in the broker or portal.
+
+The 3.1.0.5 staging path assembles a payload of `data_len + 16` bytes: a
+10-byte time/identity candidate, six bytes of additional metadata, and
+`data_len` bytes copied from the current telemetry/report buffer. The record
+buffer is at `0x3fff24e0` and the report-data source used by this path is at
+`0x3fff33fc`. The exact semantics of the 10-byte and six-byte fields remain
+partly unresolved, but this is a structured report record rather than a raw
+Modbus-frame FIFO.
 
 The FC20 response is definitely embedded in the `FUN_40243ba0` cloud/report
-object before network transmission. However, the writer path recovered here
-is passed the separate staging buffer at `0x3fff43a0`; that buffer is also used
-by the ordinary register-report builder. The current static evidence therefore
-does **not yet prove** that the exact FC20 bytes are copied into the SPI-flash
-ring on every five-minute sample. It proves the two mechanisms exist and that
-FC20 feeds a report object, but the final association between that object and
-the persistent ring remains **UNKNOWN**.
+object before network transmission. The report buffer is then copied into the
+record staging area before `FUN_4023b050` writes it to the flash ring. This is
+now **STRONG_STATIC_LINKAGE** between the FC20/report path and persistent
+backlog storage. It does not yet prove that every stored record contains the
+complete raw FC20 response byte-for-byte: the report builder may select,
+reorder, or otherwise package fields before the copy.
 
-Likewise, no unambiguous five-minute timer constant was recovered in this
-path. The observed portal backlog is consistent with the re-upload ring, but
-the cadence and ownership of each stored record still require correlation of
-the long off-cloud capture with the matching post-reconnect upload traffic.
+### 6b. Report storage versus cloud-TCP encoding
+
+The report/backlog copy and the cloud-TCP transport encoding are separate
+stages in the 3.1.0.5 image. The flash-ring writer (`FUN_4023b050`) receives
+the staged report payload directly and only adds its own eight-byte record
+header, page padding, and CRC16. No AES or cloud-packet XOR routine is called
+from that writer path. The persistent record should therefore be treated as a
+binary structured report, not as an already encoded TCP packet.
+
+The normal cloud send path is different. `FUN_40246710` performs the following
+operations before the socket send:
+
+1. `FUN_40239ee4(6, ...)` builds the cloud packet envelope and copies the
+   report payload into it;
+2. `FUN_4023a1b4(6, 0, ...)` applies a byte-wise XOR/stream transformation;
+3. `FUN_4023a294(6, 0, ...)` appends the transport CRC;
+4. `FUN_402597d4(...)` sends the resulting bytes over TCP.
+
+The receive path applies the corresponding type-6 decode and CRC checks before
+dispatching the data. This proves that the cloud TCP representation is not a
+plain copy of the register/report bytes. The transformation is best described
+as proprietary XOR/stream obfuscation; the analysed path does not establish
+that it is cryptographically strong encryption or AES. The image does contain
+generic AES source-name strings, but no call from the FC20/report-to-cloud path
+to an AES routine was identified.
+
+Consequently the current model is:
+
+```text
+inverter/FC20 data
+        -> structured telemetry/report buffer
+        -> persistent flash backlog (pre-cloud encoding)
+        -> cloud packet envelope
+        -> XOR/stream obfuscation + transport CRC
+        -> TCP/WiFi
+```
+
+When a backlog record is replayed, the expected design is that the stored
+structured report is passed through the same cloud send packaging before TCP
+transmission. The exact reader-to-replay call chain remains a follow-up static
+trace, so this last replay detail is not marked byte-level proven here.
+
+The firmware also registers 300-second timer parameters, and the observed
+five-minute portal samples/backlog are consistent with that scheduling. The
+exact timer-to-ring-write association still requires correlation of the long
+off-cloud capture with matching post-reconnect upload traffic.
 
 ## 7. H188 / FC06
 
