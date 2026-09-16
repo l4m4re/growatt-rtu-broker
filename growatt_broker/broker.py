@@ -1304,7 +1304,7 @@ class WritePolicy:
 class CacheGatewayService:
     """Serve TCP and Shine reads from one cache backed by ``Downstream``."""
 
-    _ON_DEMAND_MAX_AGE = 5.0
+    _ON_DEMAND_MAX_AGE = 10.0
     _NON_SHINE_MAX_AGE = 180.0
     _WAIT_TIMEOUT = 8.0
     _SHINE_PREFETCH_LEAD = 3.0

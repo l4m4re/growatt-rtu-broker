@@ -415,6 +415,31 @@ class _FakeDownstream:
         )
 
 
+def test_unplanned_shine_read_uses_cache_up_to_ten_seconds() -> None:
+    downstream = _FakeDownstream()
+    gateway = CacheGatewayService(downstream)
+    key = RegisterKey(3, 533, 1)
+    gateway.cache.put_block(
+        key,
+        (1,),
+        captured_at=10.0,
+        source_transaction="previous-shine-read",
+    )
+    request = add_crc(bytes.fromhex("010302150001"))
+
+    result = gateway.handle_standard_request(
+        request,
+        client="SHINE",
+        source="SHINE",
+        now=17.8,
+    )
+
+    assert result.status == "served"
+    assert result.read is not None
+    assert result.read.words == (1,)
+    assert downstream.requests == []
+
+
 def test_gateway_reads_from_one_native_block_and_replays_subsets() -> None:
     downstream = _FakeDownstream()
     gateway = CacheGatewayService(downstream)
