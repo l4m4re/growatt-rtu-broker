@@ -90,6 +90,27 @@ async def test_default_dataset_values():
 
 
 @pytest.mark.asyncio
+async def test_unsigned_register_values(tmp_path):
+    dataset_path = tmp_path / "unsigned-registers.json"
+    dataset_path.write_text(
+        json.dumps({"holding": {"0": 65535}, "input": {"1": 65535}})
+    )
+    async with start_simulator(dataset=str(dataset_path)) as (host, port):
+        client = AsyncModbusTcpClient(
+            host, port=port, framer=FramerType.SOCKET, reconnect_delay=0
+        )
+        await client.connect()
+        input_register = await client.read_input_registers(0, count=1, device_id=1)
+        assert input_register.registers == [65535]
+
+        write = await client.write_register(0, 50000, device_id=1)
+        assert not write.isError()
+        holding_register = await client.read_holding_registers(0, count=1, device_id=1)
+        assert holding_register.registers == [50000]
+        client.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(not SERIAL_AVAILABLE, reason="virtual serial ports unavailable")
 async def test_default_dataset_values_serial():
     async with virtual_serial_pair() as (sim_port, client_port):

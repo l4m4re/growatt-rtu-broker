@@ -31,12 +31,8 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Any, Callable, Dict, Iterable, Tuple
 
-from pymodbus.datastore import (
-    ModbusServerContext,
-    ModbusDeviceContext,
-    ModbusSequentialDataBlock,
-)
 from pymodbus.framer import FramerType
+from pymodbus.simulator import DataType, SimData, SimDevice
 from pymodbus.server import ModbusSerialServer, ModbusTcpServer
 
 BASE_PATH = Path(__file__).parent
@@ -250,43 +246,20 @@ async def start_simulator(
         holding_def, input_def, holding_values, input_values, strict_defs=strict_defs
     )
 
-    class LoggingDataBlock(ModbusSequentialDataBlock):
-        def __init__(self, start, values, *, kind: str):
-            super().__init__(start, values)
-            self._kind = kind
+    device = SimDevice(
+        id=1,
+        simdata=(
+            [SimData(0, values=[False] * 16, datatype=DataType.BITS)],
+            [SimData(0, values=[False] * 16, datatype=DataType.BITS)],
+            [SimData(0, values=hr_values, datatype=DataType.UINT16)],
+            [SimData(0, values=ir_values[1:], datatype=DataType.UINT16)],
+        ),
+    )
 
-        def getValues(self, address, count=1):  # type: ignore[override]
-            result = super().getValues(address, count)
-            if debug_wire:
-                _LOGGER.debug(
-                    "%s read %d:%d -> %s",
-                    self._kind,
-                    address,
-                    address + count - 1,
-                    result,
-                )
-            return result
-
-        def setValues(self, address, values):  # type: ignore[override]
-            if debug_wire:
-                _LOGGER.debug(
-                    "%s write %d:%d <- %s",
-                    self._kind,
-                    address,
-                    address + len(values) - 1,
-                    values,
-                )
-            return super().setValues(address, values)
-
-    # Pymodbus offsets holding-register addresses by +1 for TCP servers.
-    # Starting the holding block at ``1`` aligns client address ``0`` with
-    # index ``0`` of ``hr_values``. Input registers do not require this
-    # offset and therefore retain a base address of ``0``.
-    hr_block = LoggingDataBlock(1, hr_values, kind="holding")
-    ir_block = LoggingDataBlock(0, ir_values, kind="input")
-    store = {1: ModbusDeviceContext(hr=hr_block, ir=ir_block)}
-    # Pass mapping as first positional arg; current pymodbus expects this without 'slaves=' kw
-    context = ModbusServerContext(store, single=False)
+    def trace_pdu(is_client: bool, pdu: Any) -> Any:
+        if debug_wire:
+            _LOGGER.debug("%s PDU: %s", "client" if is_client else "server", pdu)
+        return pdu
 
     mode_normalized = mode.lower()
     if mode_normalized not in {"tcp", "serial"}:
@@ -297,7 +270,7 @@ async def start_simulator(
             raise ValueError("serial_port must be provided when mode='serial'")
         parity = (serial_parity or "N").upper()[0]
         server = ModbusSerialServer(
-            context,
+            device,
             framer=FramerType.RTU,
             port=serial_port,
             baudrate=serial_baudrate,
@@ -306,6 +279,7 @@ async def start_simulator(
             parity=parity,
             timeout=serial_timeout,
             handle_local_echo=serial_handle_local_echo,
+            trace_pdu=trace_pdu if debug_wire else None,
         )
         endpoint = SimulatorEndpoint(
             mode="serial",
@@ -315,7 +289,11 @@ async def start_simulator(
         )
         location = serial_port
     else:
-        server = ModbusTcpServer(context, address=(host, port))
+        server = ModbusTcpServer(
+            device,
+            address=(host, port),
+            trace_pdu=trace_pdu if debug_wire else None,
+        )
         endpoint = SimulatorEndpoint(
             mode="tcp",
             host=host,
@@ -365,9 +343,9 @@ async def start_simulator(
                     print(f"[SIM] mutator error: {e}")
             # Apply any changes from mutators back to value arrays
             for reg, val in holding_values.items():
-                hr_block.setValues(reg, [val])
+                await server.async_setValues(1, 6, reg, [val])
             for reg, val in input_values.items():
-                ir_block.setValues(reg, [val])
+                await server.async_setValues(1, 4, reg - 1, [val])
             try:
                 await asyncio.wait_for(_stop.wait(), timeout=1.0)
             except asyncio.TimeoutError:
