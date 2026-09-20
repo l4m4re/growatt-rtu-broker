@@ -82,7 +82,12 @@ A deeper breakdown of components and responsibilities lives in [`docs/ROADMAP.md
 - `docs/ROADMAP.md` – detailed architecture notes and phased implementation plan.
 - `growatt_broker/` – current Python package containing CLI, backend abstractions, simulator, and broker prototype.
 - `tests/` – pytest suite covering simulator datasets, CRC helpers, and CLI basics.
+- `tools/` – capture, dataset, probe and simulator mutation helpers.
 - `scripts/` & `Dockerfile` – helper assets for running inside Home Assistant OS or containers.
+
+See [`docs/SIMULATOR.md`](docs/SIMULATOR.md) for the simulator and dataset
+workflow. These tools are intentionally kept with the broker rather than in
+the Home Assistant integration repository.
 
 ## Quick start (editable install)
 
