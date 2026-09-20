@@ -4,6 +4,34 @@ Modbus Workbench evolves the original Growatt RTU Broker into a full-featured Mo
 monitoring, and testing. This document captures the architecture direction and the staged delivery plan that will guide
 implementation.
 
+**Status snapshot:** 2026-09-20
+
+## Open live-operation issue: write-through cache coherence
+
+The DEV Growatt TL-XH HIL test confirmed that the broker acknowledges FC10
+writes, but a subsequent read can still return the old value from the cached
+register block until the normal cache refresh. The Home Assistant integration
+currently waits 11 seconds before forcing a readback; this is a temporary
+workaround and must not become part of the device integration contract.
+
+The broker should own this invariant for every mutating register operation:
+
+- serialize the write and any competing read of the affected device/block;
+- after a successful FC06 or FC10 write, read the complete affected cache block
+  from the device through the same paced backend path;
+- commit the actual readback atomically before returning write success, so
+  clamped, normalized, or rejected device values are represented accurately;
+- leave the cache explicitly stale or invalid when the readback fails rather
+  than serving an unmarked pre-write value; and
+- keep the behavior correct for concurrent Home Assistant clients and the
+  Shine/serial path.
+
+Add simulator and live-broker tests for single-register and multiple-register
+writes, immediate reads, concurrent readers, pacing/transaction ordering, and
+failed readback. Once this contract is implemented and released, remove the
+11-second delay from `growatt_local` and retain only the broker's read-after-
+write synchronization.
+
 ## Design principles
 
 1. **One core backend, many frontends** – Serial bridges, TCP servers, sniffers, and simulators should all build on the same
@@ -66,6 +94,7 @@ implementation.
 **Battery-first milestone**
 - Make Growatt battery telemetry reliable: state of charge, battery charge/discharge power, PV power, household load, and grid import/export.
 - Identify and safely validate the writable registers needed for tariff-based charging, discharging, power limits, SoC limits, and any time-of-use controls.
+- Make register writes cache-coherent before depending on TOU controls: FC06/FC10 must perform a paced read-after-write of the affected complete block and publish the actual readback atomically. This unblocks removal of the temporary HA-side cache wait.
 - Implement the first dynamic-tariff control loop with explicit reserve-SoC, efficiency, export, and failure safeguards.
 - Keep the broker stable and observable while the HA integration and control logic evolve independently.
 
