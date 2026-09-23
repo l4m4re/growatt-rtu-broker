@@ -1271,6 +1271,15 @@ class _RefreshState:
     event: threading.Event
     snapshot: RegisterSnapshot | None = None
     error: str | None = None
+    exception_response: bytes | None = None
+
+
+class PhysicalModbusException(Exception):
+    """A CRC-valid Modbus exception returned by the physical inverter."""
+
+    def __init__(self, response: bytes) -> None:
+        self.response = response
+        super().__init__(f"physical Modbus exception: {response.hex()}")
 
 
 def native_min_6000tl_xh_plan() -> tuple[CachePolicy, ...]:
@@ -1480,10 +1489,6 @@ class CacheGatewayService:
                 return policy
         return None
 
-    def _physical_key(self, key: RegisterKey) -> RegisterKey:
-        policy = self._policy_for(key)
-        return policy.key if policy is not None else key
-
     def _physical_keys(self, key: RegisterKey) -> tuple[RegisterKey, ...]:
         """Return the native blocks that cover a requested range."""
         candidates = sorted(
@@ -1541,7 +1546,13 @@ class CacheGatewayService:
             raise ValueError("invalid physical read request")
         if not cache_crc_ok(response):
             raise ValueError("physical response CRC invalid")
-        if response[0] != request[0] or response[1] != request[1]:
+        if response[0] != request[0]:
+            raise ValueError("physical response does not match request")
+        if response[1] == (request[1] | 0x80):
+            if len(response) != 5:
+                raise ValueError("physical exception response length invalid")
+            raise PhysicalModbusException(response)
+        if response[1] != request[1]:
             raise ValueError("physical response does not match request")
         if len(response) != 5 + key.count * 2 or response[2] != key.count * 2:
             raise ValueError("physical response length does not match request")
@@ -1689,6 +1700,8 @@ class CacheGatewayService:
                     )
                 except Exception as exc:
                     state.error = str(exc)
+                    if isinstance(exc, PhysicalModbusException):
+                        state.exception_response = exc.response
                     with self._lock:
                         self._last_errors[physical_key] = state.error
                     self._emit(
@@ -1707,6 +1720,8 @@ class CacheGatewayService:
                         state.event.set()
             elif not state.event.wait(self._WAIT_TIMEOUT):
                 return None, "cache refresh wait timeout"
+            if state.exception_response is not None:
+                raise PhysicalModbusException(state.exception_response)
             if state.error:
                 return None, state.error
 
@@ -1736,12 +1751,20 @@ class CacheGatewayService:
         request_now = time.monotonic() if now is None else now
         if client == "SHINE":
             self.observe_shine_request(request, at=request_now)
-        cached, error = self._read_words(
-            key,
-            client=client,
-            source=source,
-            now=request_now,
-        )
+        try:
+            cached, error = self._read_words(
+                key,
+                client=client,
+                source=source,
+                now=request_now,
+            )
+        except PhysicalModbusException as exc:
+            return GatewayResult(
+                "failed",
+                client,
+                response=exc.response,
+                reason="physical_exception",
+            )
         if cached is None:
             return GatewayResult("failed", client, reason=error or "read failed")
         return GatewayResult(
@@ -1779,15 +1802,79 @@ class CacheGatewayService:
         *,
         client: str,
         source: str,
+        invalidated: tuple[RegisterKey, ...] | None = None,
     ) -> bool:
-        """Invalidate and physically refresh the smallest native confirmation block."""
+        """Refresh every cache block that may have been changed by a write."""
         key = self._write_key(request)
         if key is None:
             return False
+        if invalidated is None:
+            with self._lock:
+                invalidated = self.cache.invalidate_overlapping(key)
+            self._emit(
+                "cache_invalidated_after_write",
+                role="INFO",
+                client=client,
+                source=source,
+                function=key.function,
+                start=key.start,
+                count=key.count,
+                blocks=len(invalidated),
+            )
+        if invalidated:
+            readback_keys = invalidated
+        else:
+            readback_keys = tuple(
+                policy.key
+                for policy in self.policies
+                if policy.key.function == key.function
+                and policy.key.start < key.end
+                and key.start < policy.key.end
+            ) or (key,)
+        all_succeeded = True
+        for readback_key in readback_keys:
+            error: str | None = None
+            try:
+                _, error = self._read_words(
+                    readback_key,
+                    client=f"{client}:READBACK",
+                    source=source,
+                    now=time.monotonic(),
+                    force_refresh=True,
+                    allow_during_write=True,
+                )
+            except PhysicalModbusException as exc:
+                error = str(exc)
+            all_succeeded = all_succeeded and error is None
+            self._emit(
+                "write_readback",
+                role="INFO" if error is None else "WARN",
+                client=client,
+                source=source,
+                function=key.function,
+                start=key.start,
+                count=key.count,
+                readback_function=readback_key.function,
+                readback_start=readback_key.start,
+                readback_count=readback_key.count,
+                success=error is None,
+                error=error,
+                generation=self.cache.latest_generation,
+            )
+        return all_succeeded
+
+    def _invalidate_before_write(
+        self,
+        key: RegisterKey,
+        *,
+        client: str,
+        source: str,
+    ) -> tuple[RegisterKey, ...]:
+        """Remove affected snapshots before a physical write can execute."""
         with self._lock:
             invalidated = self.cache.invalidate_overlapping(key)
         self._emit(
-            "cache_invalidated_after_write",
+            "cache_invalidated_before_write",
             role="INFO",
             client=client,
             source=source,
@@ -1796,31 +1883,24 @@ class CacheGatewayService:
             count=key.count,
             blocks=len(invalidated),
         )
-        readback_key = self._physical_key(key)
-        _, error = self._read_words(
-            readback_key,
-            client=f"{client}:READBACK",
-            source=source,
-            now=time.monotonic(),
-            force_refresh=True,
-            allow_during_write=True,
+        return invalidated
+
+    @staticmethod
+    def _valid_physical_exception(
+        response: bytes,
+        request: bytes,
+        *,
+        allow_unit_zero_wildcard: bool = False,
+    ) -> bool:
+        return (
+            len(response) == 5
+            and (
+                response[0] == request[0]
+                or (allow_unit_zero_wildcard and request[0] == 0)
+            )
+            and response[1] == (request[1] | 0x80)
+            and cache_crc_ok(response)
         )
-        self._emit(
-            "write_readback",
-            role="INFO" if error is None else "WARN",
-            client=client,
-            source=source,
-            function=key.function,
-            start=key.start,
-            count=key.count,
-            readback_function=readback_key.function,
-            readback_start=readback_key.start,
-            readback_count=readback_key.count,
-            success=error is None,
-            error=error,
-            generation=self.cache.latest_generation,
-        )
-        return error is None
 
     def handle_write_request(
         self,
@@ -1861,6 +1941,9 @@ class CacheGatewayService:
             while self._write_active:
                 self._write_condition.wait()
             self._write_active = True
+        invalidated = self._invalidate_before_write(
+            key, client=client, source=source
+        )
         try:
             started = time.monotonic()
             response = self.downstream.transact(
@@ -1870,8 +1953,12 @@ class CacheGatewayService:
                 standard_modbus=True,
                 is_write=True,
             )
+            write_reason: str
+            client_response: bytes
+            physical_success = False
             if not response:
-                exception = self._exception_response(request, 0x0B)
+                client_response = self._exception_response(request, 0x0B)
+                write_reason = "physical_timeout"
                 self._emit(
                     "tcp_write_failed",
                     role="ERROR",
@@ -1881,11 +1968,11 @@ class CacheGatewayService:
                     start=key.start,
                     count=key.count,
                     values=values,
-                    reason="physical_timeout",
+                    reason=write_reason,
                 )
-                return GatewayResult("failed", client, response=exception, reason="physical_timeout")
-            if response[0] != request[0] or not cache_crc_ok(response):
-                exception = self._exception_response(request, 0x0B)
+            elif response[0] != request[0] or not cache_crc_ok(response):
+                client_response = self._exception_response(request, 0x0B)
+                write_reason = "invalid_physical_write_response"
                 self._emit(
                     "tcp_write_failed",
                     role="ERROR",
@@ -1895,15 +1982,11 @@ class CacheGatewayService:
                     start=key.start,
                     count=key.count,
                     values=values,
-                    reason="invalid_physical_write_response",
+                    reason=write_reason,
                 )
-                return GatewayResult(
-                    "failed",
-                    client,
-                    response=exception,
-                    reason="invalid_physical_write_response",
-                )
-            if response[1] == (request[1] | 0x80):
+            elif self._valid_physical_exception(response, request):
+                client_response = response
+                write_reason = "physical_exception"
                 self._emit(
                     "tcp_write_exception",
                     role="WARN",
@@ -1914,9 +1997,9 @@ class CacheGatewayService:
                     count=key.count,
                     response=response.hex(),
                 )
-                return GatewayResult("failed", client, response=response, reason="physical_exception")
-            if find_standard_response(response, request) is None:
-                exception = self._exception_response(request, 0x0B)
+            elif find_standard_response(response, request) is None:
+                client_response = self._exception_response(request, 0x0B)
+                write_reason = "invalid_physical_write_response"
                 self._emit(
                     "tcp_write_failed",
                     role="ERROR",
@@ -1926,36 +2009,47 @@ class CacheGatewayService:
                     start=key.start,
                     count=key.count,
                     values=values,
-                    reason="invalid_physical_write_response",
+                    reason=write_reason,
                 )
-                return GatewayResult(
-                    "failed",
-                    client,
-                    response=exception,
-                    reason="invalid_physical_write_response",
-                )
-            readback_ok = self._post_write(request, client=client, source=source)
-            self._emit(
-                "tcp_write_complete",
-                role="INFO" if readback_ok else "WARN",
+            else:
+                client_response = response
+                write_reason = "physical_write_readback_confirmed"
+                physical_success = True
+
+            readback_ok = self._post_write(
+                request,
                 client=client,
                 source=source,
-                function=request[1],
-                start=key.start,
-                count=key.count,
-                values=values,
-                physical_success=True,
-                readback_success=readback_ok,
-                duration_ms=round((time.monotonic() - started) * 1000, 3),
-                generation=self.cache.latest_generation,
+                invalidated=invalidated,
             )
+            if physical_success:
+                write_reason = (
+                    "physical_write_readback_confirmed"
+                    if readback_ok
+                    else "physical_write_readback_failed"
+                )
+                self._emit(
+                    "tcp_write_complete",
+                    role="INFO" if readback_ok else "WARN",
+                    client=client,
+                    source=source,
+                    function=request[1],
+                    start=key.start,
+                    count=key.count,
+                    values=values,
+                    physical_success=True,
+                    readback_success=readback_ok,
+                    duration_ms=round((time.monotonic() - started) * 1000, 3),
+                    generation=self.cache.latest_generation,
+                )
+                return GatewayResult(
+                    "served",
+                    client,
+                    response=client_response,
+                    reason=write_reason,
+                )
             return GatewayResult(
-                "served",
-                client,
-                response=response,
-                reason="physical_write_readback_confirmed"
-                if readback_ok
-                else "physical_write_readback_failed",
+                "failed", client, response=client_response, reason=write_reason
             )
         finally:
             with self._write_condition:
@@ -2073,11 +2167,17 @@ class CacheGatewayService:
         """Forward a Shine request that has no cache representation."""
         del now
         is_write = request[1] in (0x06, 0x10)
+        write_key = self._write_key(request) if is_write else None
+        invalidated: tuple[RegisterKey, ...] = ()
         if is_write:
             with self._write_condition:
                 while self._write_active:
                     self._write_condition.wait()
                 self._write_active = True
+            if write_key is not None:
+                invalidated = self._invalidate_before_write(
+                    write_key, client=client, source=source
+                )
         try:
             response = self.downstream.transact(
                 request,
@@ -2090,15 +2190,23 @@ class CacheGatewayService:
                 is_write=is_write,
             )
             if response:
-                readback_ok = False
-                write_ack = is_write and find_standard_response(
+                readback_ok = True
+                physical_exception = is_write and self._valid_physical_exception(
+                    response,
+                    request,
+                    allow_unit_zero_wildcard=request[0] == 0,
+                )
+                write_ack = is_write and not physical_exception and find_standard_response(
                     response,
                     request,
                     allow_unit_zero_wildcard=request[0] == 0,
                 ) is not None
-                if write_ack:
+                if is_write and write_key is not None:
                     readback_ok = self._post_write(
-                        request, client=client, source=source
+                        request,
+                        client=client,
+                        source=source,
+                        invalidated=invalidated,
                     )
                     self._emit(
                         "shine_write_forwarded",
@@ -2116,7 +2224,27 @@ class CacheGatewayService:
                     **parse_rtu(request),
                 )
                 return GatewayResult(
-                    "served", client, response=response, reason="physical_passthrough"
+                    "served" if (not is_write or write_ack) else "failed",
+                    client,
+                    response=response,
+                    reason=(
+                        "physical_passthrough"
+                        if not is_write
+                        else (
+                            "physical_exception"
+                            if physical_exception
+                            else "physical_passthrough"
+                            if write_ack
+                            else "invalid_physical_write_response"
+                        )
+                    ),
+                )
+            if is_write and write_key is not None:
+                self._post_write(
+                    request,
+                    client=client,
+                    source=source,
+                    invalidated=invalidated,
                 )
             return GatewayResult("failed", client, reason="physical passthrough timeout")
         finally:
@@ -2941,6 +3069,8 @@ class TCPServer(threading.Thread):
                 response = mbap + pdu2
                 conn.sendall(response)
                 if is_write:
+                    continue
+                if rtu_resp[1] & 0x80:
                     continue
                 if len(response_cache) >= self._RESPONSE_CACHE_MAX:
                     oldest = min(response_cache, key=lambda key: response_cache[key][0])

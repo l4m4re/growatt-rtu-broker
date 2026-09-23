@@ -10,7 +10,7 @@ import pytest
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.framer import FramerType
 
-from growatt_broker.broker import EventHub, TCPServer, add_crc
+from growatt_broker.broker import CacheGatewayService, EventHub, TCPServer, add_crc
 
 
 class FakeDownstream:
@@ -115,6 +115,38 @@ def test_same_tid_with_different_pdu_is_independent() -> None:
         first = _response(client_side)[0]
         second = _response(client_side)[0]
         assert (first, second) == (8, 8)
+        assert downstream.calls == 2
+    finally:
+        client_side.close()
+        thread.join(timeout=1)
+        server.sock.close()
+
+
+def test_physical_read_exception_keeps_tcp_connection_usable() -> None:
+    class ExceptionDownstream:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def transact(self, request: bytes, **_: object) -> bytes:
+            self.calls += 1
+            return add_crc(bytes([request[0], request[1] | 0x80, 0x01]))
+
+    downstream = ExceptionDownstream()
+    server = TCPServer(
+        "127.0.0.1",
+        0,
+        downstream,  # type: ignore[arg-type]
+        gateway=CacheGatewayService(downstream),  # type: ignore[arg-type]
+    )
+    client_side, thread = _connection(server)
+
+    try:
+        client_side.sendall(_request(10, 3000) + _request(10, 3000))
+        first_tid, first_body = _response(client_side)
+        second_tid, second_body = _response(client_side)
+
+        assert (first_tid, second_tid) == (10, 10)
+        assert first_body == second_body == bytes.fromhex("8401")
         assert downstream.calls == 2
     finally:
         client_side.close()
