@@ -1,0 +1,27 @@
+services:
+  forensic:
+    build: .
+    container_name: growatt-rtu-forensic
+    restart: "no"
+    network_mode: host
+    privileged: true
+    volumes:
+      - "/dev:/dev"
+      - "./captures:/captures"
+    command: >-
+      growatt-broker
+      --inverter ${INV_DEV:?INV_DEV must point to the inverter serial device}
+      --shine ${SHINE_DEV:?SHINE_DEV must point to the Shine serial device}
+      --mode legacy
+      --shine-policy raw-transparent
+      --inv-baud ${INV_BAUD:-115200}
+      --inv-bytes ${INV_BYTES:-8N1}
+      --shine-baud ${SHINE_BAUD:-115200}
+      --shine-bytes ${SHINE_BYTES:-8N1}
+      --tcp -
+      --tcp-alt -
+      --sniff ${SNIFF_BIND:-0.0.0.0:5700}
+      --forensic-rx-log /captures/${FORENSIC_FILE:-shine-firmware-update.jsonl}
+      --forensic-rx-max-bytes ${FORENSIC_MAX_BYTES:-100000000}
+      --forensic-rx-max-seconds ${FORENSIC_MAX_SECONDS:-3600}
+      --log -
