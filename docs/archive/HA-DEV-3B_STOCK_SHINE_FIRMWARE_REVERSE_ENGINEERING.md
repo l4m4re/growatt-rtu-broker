@@ -1,3 +1,5 @@
+> **Historical evidence — not current deployment guidance.** This report records a dated experiment. Check [AGENTS.md](../../AGENTS.md), [the current roadmap](../ROADMAP.md), and [the protocol/evidence index](../PIITM_PROTOCOL_AND_EVIDENCE.md) for the current PiITM contract. Interpret claims using the report's original date, commit, and hardware profile.
+>
 # HA-DEV-3B — static reverse engineering of stock ShineWiFi-X firmware
 
 Date: 2026-09-09
@@ -16,9 +18,9 @@ captures, vendor material, and open-firmware reference code. It does not use
 static byte coincidence to manufacture a complete protocol map.
 
 The compact machine-readable finding set is
-[shine_stock_3_0_0_2_protocol_evidence.json](data/shine_stock_3_0_0_2_protocol_evidence.json).
+[shine_stock_3_0_0_2_protocol_evidence.json](../data/shine_stock_3_0_0_2_protocol_evidence.json).
 The deterministic scanner is
-[analyze_shine_firmware.py](../tools/analyze_shine_firmware.py).
+[analyze_shine_firmware.py](../../tools/analyze_shine_firmware.py).
 
 ## 1. Inventory
 

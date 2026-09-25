@@ -1,3 +1,5 @@
+> **Historical evidence — not current deployment guidance.** This report records a dated experiment. Check [AGENTS.md](../../AGENTS.md), [the current roadmap](../ROADMAP.md), and [the protocol/evidence index](../PIITM_PROTOCOL_AND_EVIDENCE.md) for the current PiITM contract. Interpret claims using the report's original date, commit, and hardware profile.
+>
 # HA-DEV-3A virtual Shine discovery proof
 
 Date: 2026-09-08 UTC

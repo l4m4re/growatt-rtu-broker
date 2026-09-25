@@ -5,4 +5,11 @@ dist/
 build/
 *.egg-info/
 /captures/
+# Live and forensic output stays outside the source tree.
+broker*.log
+broker*.txt
+rev_eng*.txt
+.pids/
+.pytest_cache/
+.ruff_cache/
 .DS_Store

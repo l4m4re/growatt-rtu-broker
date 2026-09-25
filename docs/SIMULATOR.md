@@ -1,7 +1,7 @@
 # Modbus simulator and dataset tools
 
-The simulator belongs to Modbus Workbench because it models Modbus transports,
-datasets, captures and scenarios independently of Home Assistant.
+The simulator belongs to PiITM because it models Modbus transports, datasets,
+captures, and scenarios independently of Home Assistant.
 
 ## Run the simulator
 
@@ -26,7 +26,7 @@ fixture; it is not an integration runtime dependency.
 - `tools/probe_simulator.py` reads representative holding and input ranges.
 - `tools/compact_capture.py` converts broker capture JSONL to a dataset.
 - `tools/build_dataset_from_scan.py` converts scanner output to a dataset.
-- `tools/tcp_read.py` performs a small direct TCP read.
+- `tools/tcp_read.py` performs a small direct TCP read (defaults to localhost; use `--host` for a Pi).
 - `tools/mutators/` contains mutation examples.
 - `scripts/start-serial-simulator.sh` starts the simulator behind a virtual
   serial pair.

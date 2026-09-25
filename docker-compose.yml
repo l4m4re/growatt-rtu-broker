@@ -14,15 +14,22 @@ services:
     command: >-
       growatt-broker
       --inverter ${INV_DEV}
-      --shine ${SHINE_DEV}
+      --shine ${SHINE_DEV:?SHINE_DEV is required by docker-compose.yml}
       --mode ${BROKER_MODE:-legacy}
       --baud ${BAUD:-115200}
       --bytes ${BYTES:-8N1}
+      --inv-baud ${INV_BAUD:-${BAUD:-115200}}
+      --inv-bytes ${INV_BYTES:-${BYTES:-8N1}}
+      --shine-baud ${SHINE_BAUD:-${BAUD:-115200}}
+      --shine-bytes ${SHINE_BYTES:-${BYTES:-8N1}}
+      --shine-policy ${SHINE_POLICY:-read-only}
       --tcp ${TCP_BIND:-0.0.0.0:5020}
       --tcp-alt ${TCP_ALT_BIND:-0.0.0.0:5021}
       --sniff ${SNIFF_BIND:-0.0.0.0:5700}
       --min-period ${MIN_PERIOD:-1.0}
       --rtimeout ${RTIMEOUT:-1.5}
+      --fc20-timeout ${FC20_TIMEOUT:-3.0}
+      --shine-burst ${SHINE_BURST:-8}
       --prod-tcp-writes ${PROD_TCP_WRITES:-enabled}
       --dev-tcp-writes ${DEV_TCP_WRITES:-enabled}
       --log ${LOG_PATH:--}

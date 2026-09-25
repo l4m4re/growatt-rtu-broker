@@ -103,13 +103,17 @@ DOCKER_CMD=(docker run -d "${DOCKER_ARGS[@]}" growatt-rtu-broker:local \
     --baud "${INV_BAUD:-${BAUD:-115200}}" --bytes "${INV_BYTES:-${BYTES:-8N1}}" \
     --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
     --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" \
+    --fc20-timeout "${FC20_TIMEOUT:-3.0}" --shine-burst "${SHINE_BURST:-8}" \
+    --shine-policy "${SHINE_POLICY:-read-only}" \
     --prod-tcp-writes "${PROD_TCP_WRITES:-enabled}" \
     --dev-tcp-writes "${DEV_TCP_WRITES:-enabled}" \
     --log "${LOG_PATH:--}" \
     --mode "${BROKER_MODE}")
 
 if [ "${SHINE_CONFIGURED}" -eq 1 ]; then
-  DOCKER_CMD+=(--shine "${SHINE_ARG}")
+  DOCKER_CMD+=(--shine "${SHINE_ARG}" \
+    --shine-baud "${SHINE_BAUD:-${BAUD:-115200}}" \
+    --shine-bytes "${SHINE_BYTES:-${BYTES:-8N1}}")
 fi
 
 echo "Prepared docker run command:"

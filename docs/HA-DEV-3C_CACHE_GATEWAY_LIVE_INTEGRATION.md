@@ -1,5 +1,7 @@
 # HA-DEV-3C cache gateway live integration
 
+> Historical staged rollout record. The current live reference is documented in [README.md](../README.md) and [PIITM_PROTOCOL_AND_EVIDENCE.md](PIITM_PROTOCOL_AND_EVIDENCE.md).
+
 Status: Stage A accepted; Stage B is operational with the connected Shine and
 is transport-transparent. It is not yet marked fully green because the
 inverter still shows intermittent genuine no-response transactions.
@@ -16,16 +18,16 @@ changing its image or configuration:
 | broker `:5021` | valid 259-byte Modbus-TCP response |
 | production HA | repeated `growatt_local` fetches with `success: True` |
 | recent HA errors | no `No response received` or `no_response` lines |
-| legacy image | `growatt-rtu-broker:ha-dev-2b-dfb99a8` |
-| legacy container | retained stopped as `growatt-broker-ha2c-dfb99a8` |
+| legacy image | `growatt-rtu-broker:<historical-legacy-tag>` |
+| legacy container | retained stopped as `growatt-broker-<historical-rollback-container>` |
 
 The recovery had previously required recreating a stale Docker device mapping
 after the inverter adapter re-enumerated from one `ttyUSB` minor to another.
 The Shine and inverter aliases were distinct:
 
 ```text
-/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0  -> inverter
-/dev/serial/by-id/usb-04e2_1410-if00-port0         -> Shine
+/dev/serial/by-path/<inverter-port>  -> inverter
+/dev/serial/by-path/<shine-port>         -> Shine
 ```
 
 ## Candidate and runtime
@@ -37,7 +39,7 @@ The Stage-A candidate was transferred from the exact local source commit
 tag:      growatt-rtu-broker:ha-dev-3c-643a512
 image ID: sha256:80d6e12352ad0807f55fc5eccac49cd0b00dc74cc9c9a8b761321d5253d2cb5a
 mode:     cache
-inverter: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+inverter: /dev/serial/by-path/<inverter-port>
 baud:     115200 8N1
 ports:    5020, 5021, 5700
 period:   1.0 s
@@ -87,7 +89,7 @@ The next controlled transition is to stop Stage A and start the same image in
 `cache+shine` mode with this separate Shine path:
 
 ```text
-/dev/serial/by-id/usb-04e2_1410-if00-port0
+/dev/serial/by-path/<shine-port>
 ```
 
 The first Stage-B image used `cache+shine` with separate stable inverter and
@@ -111,7 +113,7 @@ tag:      growatt-rtu-broker:ha-dev-3c-transparent-timeout
 image ID: sha256:178c48c19e9354c0f7e74098e0fcc19203fff4fa0d97d6fcb9fee8561ebfbb17
 container: growatt-broker-ha3c-stage-b-transparent
 mode:     cache+shine
-paths:    inverter and Shine stable /dev/serial/by-id aliases
+paths:    inverter and Shine stable /dev/serial/by-path aliases
 ```
 
 In the first ten minutes after this deployment, the broker observed 58 Shine
@@ -172,7 +174,7 @@ to its own protocol behavior.
 
 The Shine is deliberately hot-pluggable. The broker:
 
-* accepts and retries a stable `/dev/serial/by-id` alias even when the device
+* accepts and retries a stable `/dev/serial/by-path` alias even when the device
   is absent at startup;
 * detects disappearance of the alias or serial I/O errors, closes the stale
   descriptor, and retries opening the alias;
@@ -186,8 +188,8 @@ The Shine is deliberately hot-pluggable. The broker:
 The live aliases are currently:
 
 ```text
-/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0  inverter
-/dev/serial/by-id/usb-04e2_1410-if00-port0         Shine
+/dev/serial/by-path/<inverter-port>  inverter
+/dev/serial/by-path/<shine-port>         Shine
 ```
 
 No Shine unplug/replug was required during this canary because the device was

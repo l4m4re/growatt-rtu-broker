@@ -1,8 +1,9 @@
 # HA-DEV-3A cache-centric Growatt broker architecture
 
-Status: opt-in implementation; production remains on the legacy default. The
-consolidated review and current live baseline are recorded in
-[`HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md`](HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md).
+Status: implemented opt-in architecture. The 2026-09-25 live reference uses
+`cache+shine-predictive`; `legacy` remains the documented rollback profile.
+The historical consolidated review and current live baseline are recorded in
+[`HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md`](archive/HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md).
 
 ## Decision
 
@@ -14,9 +15,9 @@ discovery request is terminated locally for a validated device profile, and
 normal reads are answered from the same register cache used by HA.
 
 The cache implementation is enabled only with `--mode cache`, `--mode cache+shine`,
-`--mode cache+shine-direct`, or `--mode cache+shine-predictive`. The default remains `--mode legacy`, so no
-production
-mode changes merely by upgrading the image.
+`--mode cache+shine-direct`, or `--mode cache+shine-predictive`. The default
+remains `--mode legacy`, so upgrading the image does not silently change an
+explicit legacy deployment.
 
 ## Evidence from HA-DEV-2C/2D/2E
 
@@ -137,8 +138,8 @@ The cache mode can be exercised with:
 
 ```text
 --mode cache
---mode cache+shine --shine /dev/serial/by-id/<shine-port>
---mode cache+shine-direct --shine /dev/serial/by-id/<shine-port>
+--mode cache+shine --shine /dev/serial/by-path/<shine-port>
+--mode cache+shine-direct --shine /dev/serial/by-path/<shine-port>
 ```
 
 `cache+shine` recognizes the validated unit-0 discovery request but forwards it

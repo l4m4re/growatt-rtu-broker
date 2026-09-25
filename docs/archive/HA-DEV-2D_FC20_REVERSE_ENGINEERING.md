@@ -1,3 +1,5 @@
+> **Historical evidence — not current deployment guidance.** This report records a dated experiment. Check [AGENTS.md](../../AGENTS.md), [the current roadmap](../ROADMAP.md), and [the protocol/evidence index](../PIITM_PROTOCOL_AND_EVIDENCE.md) for the current PiITM contract. Interpret claims using the report's original date, commit, and hardware profile.
+>
 # HA-DEV-2D FC20 reverse engineering and Shine discovery
 
 Date: 2026-09-07  
@@ -11,7 +13,7 @@ remains the known-good no-Shine broker with development HA available. No
 Growatt, DDSU666, HA, Peblar, or Zoe writes were performed.
 
 The machine-readable result is
-[fc20_word_analysis.json](data/fc20_word_analysis.json). It contains every
+[fc20_word_analysis.json](../data/fc20_word_analysis.json). It contains every
 recovered request/response, all 100 FC20 words per response, unsigned and
 signed interpretations, all adjacent big-endian 32-bit candidates, and the
 contemporaneous standard FC03/FC04 snapshots. The raw JSONL files remain

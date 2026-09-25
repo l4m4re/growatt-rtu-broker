@@ -1,3 +1,5 @@
+> **Historical evidence — not current deployment guidance.** This report records a dated experiment. Check [AGENTS.md](../../AGENTS.md), [the current roadmap](../ROADMAP.md), and [the protocol/evidence index](../PIITM_PROTOCOL_AND_EVIDENCE.md) for the current PiITM contract. Interpret claims using the report's original date, commit, and hardware profile.
+>
 # HA-DEV-3D session checkpoint — cache gateway, Shine observation, and next HA work
 
 Date: 2026-09-11
@@ -309,10 +311,10 @@ The detailed evidence remains in the existing reports and data files:
 - [HA-DEV-2C Shine transport observation](HA-DEV-2C_SHINE_TRANSPORT.md)
 - [HA-DEV-2D FC20 reverse engineering](HA-DEV-2D_FC20_REVERSE_ENGINEERING.md)
 - [HA-DEV-2E discovery flush A/B test](HA-DEV-2E_SHINE_DISCOVERY_FLUSH_AB.md)
-- [HA-DEV-3A cache gateway architecture](HA-DEV-3A_CACHE_GATEWAY_ARCHITECTURE.md)
-- [HA-DEV-3C live cache gateway integration](HA-DEV-3C_CACHE_GATEWAY_LIVE_INTEGRATION.md)
-- [HA-DEV-3C serial recovery](HA-DEV-3C_SERIAL_RECOVERY.md)
-- [FC20 word analysis data](data/fc20_word_analysis.json)
+- [HA-DEV-3A cache gateway architecture](../HA-DEV-3A_CACHE_GATEWAY_ARCHITECTURE.md)
+- [HA-DEV-3C live cache gateway integration](../HA-DEV-3C_CACHE_GATEWAY_LIVE_INTEGRATION.md)
+- [HA-DEV-3C serial recovery](../HA-DEV-3C_SERIAL_RECOVERY.md)
+- [FC20 word analysis data](../data/fc20_word_analysis.json)
 
 The primary live evidence source remains the bounded JSONL sniff stream on
 TCP 5700. Large persistent broker logs are supporting evidence only. The

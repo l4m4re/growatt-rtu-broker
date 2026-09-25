@@ -1,5 +1,13 @@
 # PiITM project instructions
 
+**Release preparation status (2026-09-25):** the PiITM public README, roadmap,
+live deployment guide, forensic runbook, evidence index, standalone test
+configuration, pinned lint/test dependencies, and CI workflow are now in
+place. Historical reports are under `docs/archive/`; generated logs and
+reverse-engineering dumps were removed from the release tree. Remaining gates
+are hardware acceptance evidence, image/tag publication, and separately
+reviewed git-history cleanup.
+
 This repository is the **Growatt Pi in the Middle (PiITM)** project. The
 Raspberry Pi owns the physical inverter serial connection and mediates access
 for Home Assistant, a Shine data logger, development tools, and controlled
