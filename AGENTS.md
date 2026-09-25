@@ -4,9 +4,11 @@
 live deployment guide, forensic runbook, evidence index, standalone test
 configuration, pinned lint/test dependencies, and CI workflow are now in
 place. Historical reports are under `docs/archive/`; generated logs and
-reverse-engineering dumps were removed from the release tree. Remaining gates
-are hardware acceptance evidence, image/tag publication, and separately
-reviewed git-history cleanup.
+reverse-engineering dumps were removed from the release tree. The RPi Docker
+build, write-disabled read-only canary, rollback, and remote CI matrix are
+recorded in `docs/PIITM_LIVE_ACCEPTANCE_20260925.md`. Remaining gates are a
+separately reviewed git-history cleanup, release tag/image publication, and
+the final Growatt_ModbusTCP handoff.
 
 This repository is the **Growatt Pi in the Middle (PiITM)** project. The
 Raspberry Pi owns the physical inverter serial connection and mediates access
