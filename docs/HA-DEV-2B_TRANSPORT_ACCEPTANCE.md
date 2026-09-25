@@ -36,6 +36,12 @@ accepted the first response.
 
 ### Corrected behavior
 
+The behavior in this historical transport report describes the former
+connection-local response replay experiment. It is no longer the current
+cache-gateway contract: standard TCP reads now use the shared register cache
+and a cache miss refreshes the complete native block before a response is
+returned. There is no separate TCP response cache in the current path.
+
 Broker branch: `fix/ha-dev-2b-forensics-20260906`
 
 - runtime commit deployed: `dfb99a8705ab88145e252f464d61ecd789e92f2a`;

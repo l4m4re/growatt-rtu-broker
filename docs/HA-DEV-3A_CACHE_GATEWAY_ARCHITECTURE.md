@@ -102,6 +102,31 @@ range crossing blocks is composed only when every piece is fresh and all
 pieces share the same `snapshot_id`; otherwise a refresh is required. This
 prevents silently combining unrelated generations.
 
+## TCP read path
+
+The register cache is the only cache used to answer standard Modbus reads in
+cache mode. The TCP server does not keep a second response cache and does not
+deduplicate requests by transaction ID. For each read it therefore follows
+one of two paths:
+
+1. a fresh value is contained in the register cache and the response is built
+   immediately from that snapshot; or
+2. the value is absent or stale, so the gateway schedules a physical read of
+   the complete native block (or all native blocks needed for a crossing
+   range), updates the register cache, and only then returns the response.
+
+An exact TCP retry is safe on the second path because the first completed
+refresh has already populated the shared register cache. The retry becomes a
+normal cache hit. Requests that arrive concurrently while a refresh is in
+flight are coalesced by the gateway rather than by a TCP response cache.
+
+Writes follow the same ownership rule. The overlapping snapshots are marked
+dirty before the physical FC06/FC10 transaction. Reads wait while the write
+and its read-after-write are in progress. After a successful write the broker
+refreshes the complete affected native block before serving reads again. If
+that readback fails, the affected block remains unavailable instead of
+serving the old value.
+
 The live implementation polls the validated native MIN/TL-XH blocks as
 background work and serves contained TCP or virtual-Shine reads by slicing
 those snapshots. The current plan is exposed by

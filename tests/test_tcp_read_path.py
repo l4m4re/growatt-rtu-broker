@@ -1,4 +1,4 @@
-"""Regression tests for duplicate Modbus-TCP retries."""
+"""Regression tests for Modbus-TCP reads and the shared register cache."""
 
 from __future__ import annotations
 
@@ -14,17 +14,35 @@ from growatt_broker.broker import CacheGatewayService, EventHub, TCPServer, add_
 
 
 class FakeDownstream:
-    """Return one deterministic response per physical transaction."""
+    """Return one deterministic single-register response per transaction."""
 
     def __init__(self, delay: float = 0.0) -> None:
         self.calls = 0
         self.delay = delay
+        self.requests: list[bytes] = []
 
     def transact(self, request: bytes, **_: object) -> bytes:
         self.calls += 1
+        self.requests.append(request)
         if self.delay:
             time.sleep(self.delay)
         return add_crc(bytes([1, request[1], 2, 0, self.calls]))
+
+
+class FakeBlockDownstream(FakeDownstream):
+    """Return a complete response for every requested register block."""
+
+    def transact(self, request: bytes, **_: object) -> bytes:
+        self.calls += 1
+        self.requests.append(request)
+        if self.delay:
+            time.sleep(self.delay)
+        count = int.from_bytes(request[4:6], "big")
+        words = (self.calls,) * count
+        return add_crc(
+            bytes([request[0], request[1], count * 2])
+            + b"".join(word.to_bytes(2, "big") for word in words)
+        )
 
 
 class EventCollector:
@@ -62,7 +80,7 @@ def _connection(server: TCPServer) -> tuple[socket.socket, threading.Thread]:
     return client_side, thread
 
 
-def test_duplicate_retry_is_suppressed_without_second_physical_transaction() -> None:
+def test_duplicate_reads_are_forwarded_in_legacy_mode() -> None:
     downstream = FakeDownstream(delay=0.05)
     collector = EventCollector()
     events = EventHub([collector])
@@ -75,13 +93,12 @@ def test_duplicate_retry_is_suppressed_without_second_physical_transaction() -> 
         client_side.sendall(_request(4, 3125) + _request(5, 3000))
 
         first_tid, _ = _response(client_side)
+        duplicate_tid, _ = _response(client_side)
         next_tid, _ = _response(client_side)
 
-        assert (first_tid, next_tid) == (4, 5)
-        assert downstream.calls == 2
-        assert [event["event"] for event in collector.events] == [
-            "tcp_duplicate_suppressed"
-        ]
+        assert (first_tid, duplicate_tid, next_tid) == (4, 4, 5)
+        assert downstream.calls == 3
+        assert not collector.events
     finally:
         client_side.close()
         thread.join(timeout=1)
@@ -154,36 +171,42 @@ def test_physical_read_exception_keeps_tcp_connection_usable() -> None:
         server.sock.close()
 
 
-def test_cache_is_connection_local_and_expires() -> None:
-    downstream = FakeDownstream()
-    server = TCPServer("127.0.0.1", 0, downstream)  # type: ignore[arg-type]
-    server._RESPONSE_CACHE_TTL = 0.02
+def test_duplicate_reads_are_served_from_the_shared_register_cache() -> None:
+    downstream = FakeBlockDownstream()
+    gateway = CacheGatewayService(downstream)
+    server = TCPServer(
+        "127.0.0.1",
+        0,
+        downstream,  # type: ignore[arg-type]
+        gateway=gateway,
+    )
+    client_side, thread = _connection(server)
 
-    first_client, first_thread = _connection(server)
-    first_client.sendall(_request(9, 3000))
-    assert _response(first_client)[0] == 9
-    first_client.close()
-    first_thread.join(timeout=1)
-
-    second_client, second_thread = _connection(server)
     try:
-        second_client.sendall(_request(9, 3000))
-        assert _response(second_client)[0] == 9
-        time.sleep(0.03)
-        second_client.sendall(_request(9, 3000))
-        assert _response(second_client)[0] == 9
-        assert downstream.calls == 3
+        client_side.sendall(_request(9, 3000) + _request(9, 3000))
+        first_tid, first_body = _response(client_side)
+        second_tid, second_body = _response(client_side)
+        assert (first_tid, second_tid) == (9, 9)
+        assert first_body == second_body
+        assert downstream.calls == 1
+        assert downstream.requests == [add_crc(bytes.fromhex("01040bb8007d"))]
     finally:
-        second_client.close()
-        second_thread.join(timeout=1)
+        client_side.close()
+        thread.join(timeout=1)
         server.sock.close()
 
 
 @pytest.mark.asyncio
-async def test_real_pymodbus_retry_does_not_duplicate_physical_call() -> None:
+async def test_real_pymodbus_retry_reuses_register_cache() -> None:
     """Exercise the actual PyModbus retry path, not a handcrafted retry only."""
-    downstream = FakeDownstream(delay=0.15)
-    server = TCPServer("127.0.0.1", 0, downstream)  # type: ignore[arg-type]
+    downstream = FakeBlockDownstream(delay=0.15)
+    gateway = CacheGatewayService(downstream, policies=())
+    server = TCPServer(
+        "127.0.0.1",
+        0,
+        downstream,  # type: ignore[arg-type]
+        gateway=gateway,
+    )
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)

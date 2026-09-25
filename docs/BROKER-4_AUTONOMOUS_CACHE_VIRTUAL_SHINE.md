@@ -103,7 +103,8 @@ for the shared write path.
 Both TCP listeners route FC06 and FC10 through the same physical path as
 Shine writes. A TCP success is returned only after a CRC-valid, request-matched
 physical inverter response. The broker never synthesizes or cache-acknowledges
-a write, and duplicate writes are not suppressed by the read-response cache.
+a write. Every write is serialized with reads and is followed by a native
+read-back before the affected block can be served again.
 
 After a successful physical write the overlapping holding snapshots are
 invalidated immediately. The broker then reads back the smallest configured
@@ -135,7 +136,7 @@ The focused broker/cache/framing suite passed:
 ```text
 python3 -m pytest -o asyncio_mode=auto -q \
   tests/test_broker_writes.py tests/test_cache_gateway.py \
-  tests/test_tcp_transaction_cache.py tests/test_standard_framing.py \
+  tests/test_tcp_read_path.py tests/test_standard_framing.py \
   tests/test_shine_policy.py
 95 passed
 ```

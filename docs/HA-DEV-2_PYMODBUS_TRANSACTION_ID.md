@@ -4,6 +4,12 @@ Date: 2026-09-06 (UTC)
 
 Status: transport diagnosis complete; write readiness is **NOT GREEN**.
 
+Historical note: the response-replay mitigation described below was a bounded
+experiment for the legacy direct TCP path. The current cache-gateway design
+does not use a TCP response cache. Standard reads are answered from the one
+shared register cache, and a cache miss refreshes the complete native block
+before the TCP response is sent.
+
 This report continues the published HA-DEV-1R rehearsal on HA-core branch
 `growatt-local-test` at commit `6fe3e6758c1c46808a7e22be6b9be785d4a27eba`.
 That commit is unchanged and its remote branch was verified equal before this

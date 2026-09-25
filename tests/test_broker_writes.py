@@ -61,6 +61,15 @@ def test_fc06_is_physically_written_and_read_back() -> None:
     assert gateway.cache.read(
         RegisterKey(3, 188, 1), now=time.monotonic(), max_age=5
     ) is not None
+    read_result = gateway.handle_standard_request(
+        add_crc(bytes.fromhex("010300bc0001")),
+        client="TCP:dev",
+        source="DEV_TCP",
+    )
+    assert read_result.status == "served"
+    assert read_result.read is not None
+    assert read_result.read.words == (1,)
+    assert len(downstream.requests) == 2
 
 
 def test_write_invalidates_cache_before_physical_transaction() -> None:
