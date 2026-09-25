@@ -24,7 +24,9 @@ for register names or inverter semantics.
   opt-in predictive profile;
 - standalone package installation, simulator fixtures, tests, Black/Ruff
   checks, and CI workflow;
-- bounded ShineWiLan-X2 raw bridge evidence on the live Raspberry Pi.
+- bounded ShineWiLan-X2 raw bridge evidence on the live Raspberry Pi;
+- a read-only candidate canary built on the RPi, read on ports 5020/5021, and
+  rolled back to the known-good container (see the acceptance record).
 
 ### Known limits
 

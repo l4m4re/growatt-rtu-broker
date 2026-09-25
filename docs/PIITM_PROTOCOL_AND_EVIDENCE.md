@@ -80,6 +80,8 @@ The current reports do not prove the semantic identity of FC20 words, H188,
 H209, VPP registers, asynchronous frames, or discovery values across inverter
 families. Do not move those interpretations into PiITM code.
 
+The bounded RPi canary is recorded in [PIITM_LIVE_ACCEPTANCE_20260925.md](PIITM_LIVE_ACCEPTANCE_20260925.md).
+
 ## Reproducible evidence
 
 Compact fixtures live under `docs/data/` and are intentionally small. The

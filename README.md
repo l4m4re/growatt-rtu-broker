@@ -151,8 +151,9 @@ credentials, private network addresses, or unbounded live logs.
 
 ## Evidence and protocol boundaries
 
-[docs/PIITM_PROTOCOL_AND_EVIDENCE.md](docs/PIITM_PROTOCOL_AND_EVIDENCE.md)
-indexes compact samples and the evidence labels used by this project:
+[docs/PIITM_PROTOCOL_AND_EVIDENCE.md](docs/PIITM_PROTOCOL_AND_EVIDENCE.md) and the
+[2026-09-25 live acceptance record](docs/PIITM_LIVE_ACCEPTANCE_20260925.md)
+index compact samples and the evidence labels used by this project:
 `PROVEN_LIVE`, `REPLAYED`, `STATIC_ANALYSIS`, `VENDOR_REFERENCE`,
 `HYPOTHESIS`, and `NOT_TESTED`. The historical HA-DEV reports are retained
 under [docs/archive](docs/archive) and are not current deployment
