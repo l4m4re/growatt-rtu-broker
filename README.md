@@ -172,7 +172,8 @@ repository. Keep register definitions and device-specific interpretation in
 the Growatt information repositories. Small reviewable changes are preferred;
 include the command and evidence location for any live hardware test.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the release plan and
-[AGENTS.md](AGENTS.md) for repository working rules.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the release plan,
+[GROWATT_MODBUS_TCP_HANDOFF.md](docs/GROWATT_MODBUS_TCP_HANDOFF.md) for the
+protocol handoff, and [AGENTS.md](AGENTS.md) for repository working rules.
 
 MIT licensed.
