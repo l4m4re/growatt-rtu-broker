@@ -8,8 +8,13 @@ If --out is omitted it writes to the broker simulator datasets directory (<repo>
 Keeps the *last* observed value for each register per function.
 Accepts events produced by CaptureBackend (ops: read_input, read_holding).
 """
+
 from __future__ import annotations
-import argparse, json, pathlib, sys
+
+import argparse
+import json
+import pathlib
+import sys
 from typing import Dict, List
 
 DEFAULT_DATASET_DIR = (
@@ -21,6 +26,7 @@ DEFAULT_DATASET_DIR = (
 
 OP_MAP = {"read_input": "input", "read_holding": "holding"}
 
+
 def load_events(path: pathlib.Path):
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
@@ -31,6 +37,7 @@ def load_events(path: pathlib.Path):
                 yield json.loads(line)
             except json.JSONDecodeError:
                 continue
+
 
 def compact(lines) -> dict:
     holding: Dict[int, int] = {}
@@ -49,10 +56,13 @@ def compact(lines) -> dict:
         "input": {str(k): v for k, v in sorted(input_.items())},
     }
 
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Compact capture JSONL to dataset JSON")
     ap.add_argument("--in", required=True, dest="inp", help="Input capture JSONL file")
-    ap.add_argument("--device", required=True, help="Device key used for default output name")
+    ap.add_argument(
+        "--device", required=True, help="Device key used for default output name"
+    )
     ap.add_argument(
         "--out",
         help=(
@@ -81,8 +91,11 @@ def main(argv=None):
     tmp = out_path.with_suffix(out_path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(out_path)
-    print(f"[OK] wrote dataset: {out_path} (holding={len(data['holding'])} input={len(data['input'])})")
+    print(
+        f"[OK] wrote dataset: {out_path} (holding={len(data['holding'])} input={len(data['input'])})"
+    )
     return 0
+
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

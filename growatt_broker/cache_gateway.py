@@ -512,7 +512,10 @@ class ShinePatternObserver:
                 if len(samples) < minimum_samples:
                     continue
                 typical = float(median(samples))
-                if max(abs(sample - typical) for sample in samples) > self.jitter_tolerance:
+                if (
+                    max(abs(sample - typical) for sample in samples)
+                    > self.jitter_tolerance
+                ):
                     continue
                 last_seen = self._last_seen.get(key)
                 if last_seen is None:

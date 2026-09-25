@@ -25,11 +25,12 @@ import asyncio
 import contextlib
 import json
 import logging
-import importlib, inspect
+import importlib
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Any, Callable, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 from pymodbus.framer import FramerType
 from pymodbus.simulator import DataType, SimData, SimDevice

@@ -68,9 +68,9 @@ async def test_simulator_register_reads():
                     # alltogether that has to be investigated separately.
                     # First problem is to make sure we can read all registers without
                     # communication loss.
-                    assert reg_val == expected_val, (
-                        f"Mismatch at address {addr}: got {reg_val}, expected {expected_val}"
-                    )
+                    assert (
+                        reg_val == expected_val
+                    ), f"Mismatch at address {addr}: got {reg_val}, expected {expected_val}"
             # Second: test block reads for each range
             for start, end in ranges:
                 total = end - start + 1
@@ -80,15 +80,15 @@ async def test_simulator_register_reads():
                     rr = await client.read_holding_registers(
                         offset, count=chunk, device_id=1
                     )
-                    assert not rr.isError(), (
-                        f"Read error at range {offset}-{offset + chunk - 1}"
-                    )
+                    assert (
+                        not rr.isError()
+                    ), f"Read error at range {offset}-{offset + chunk - 1}"
                     for i, reg_val in enumerate(rr.registers):
                         addr = offset + i
                         expected_val = expected.get(addr, 0)
-                        assert reg_val == expected_val, (
-                            f"Mismatch at address {addr}: got {reg_val}, expected {expected_val}"
-                        )
+                        assert (
+                            reg_val == expected_val
+                        ), f"Mismatch at address {addr}: got {reg_val}, expected {expected_val}"
                     offset += chunk
                     total -= chunk
         finally:

@@ -425,7 +425,9 @@ class RTUFramer:
                     # large and no valid frame is detected, drop it and return
                     # timeout to avoid memory issues.
                     if len(self.buf) > 8192:
-                        self._report_unframed(bytes(self.buf), "buffer_overflow_discard")
+                        self._report_unframed(
+                            bytes(self.buf), "buffer_overflow_discard"
+                        )
                         if self.capture:
                             self.capture(bytes(self.buf), "buffer_overflow_discard")
                         self.buf.clear()
@@ -1028,9 +1030,7 @@ class Downstream:
             selected = min(
                 non_shine,
                 key=lambda item: (
-                    self._priority(
-                        item.source, item.client, is_write=item.is_write
-                    ),
+                    self._priority(item.source, item.client, is_write=item.is_write),
                     item.is_write,
                     item.queued_ns,
                 ),
@@ -1039,9 +1039,7 @@ class Downstream:
             selected = min(
                 self._pending,
                 key=lambda item: (
-                    self._priority(
-                        item.source, item.client, is_write=item.is_write
-                    ),
+                    self._priority(item.source, item.client, is_write=item.is_write),
                     item.is_write,
                     item.queued_ns,
                 ),
@@ -1287,11 +1285,19 @@ def native_min_6000tl_xh_plan() -> tuple[CachePolicy, ...]:
     return (
         CachePolicy(RegisterKey(4, 3000, 125), "input_3000", 10.0, 15.0, "control", 0),
         CachePolicy(RegisterKey(4, 3125, 125), "input_3125", 10.0, 15.0, "control", 0),
-        CachePolicy(RegisterKey(3, 3000, 125), "holding_3000", 60.0, 180.0, "monitoring", 2),
-        CachePolicy(RegisterKey(3, 180, 20), "holding_180", 300.0, 600.0, "monitoring", 5),
-        CachePolicy(RegisterKey(3, 209, 15), "holding_209", 300.0, 600.0, "monitoring", 5),
+        CachePolicy(
+            RegisterKey(3, 3000, 125), "holding_3000", 60.0, 180.0, "monitoring", 2
+        ),
+        CachePolicy(
+            RegisterKey(3, 180, 20), "holding_180", 300.0, 600.0, "monitoring", 5
+        ),
+        CachePolicy(
+            RegisterKey(3, 209, 15), "holding_209", 300.0, 600.0, "monitoring", 5
+        ),
         CachePolicy(RegisterKey(3, 0, 125), "holding_0", 300.0, 600.0, "diagnostic", 6),
-        CachePolicy(RegisterKey(4, 3250, 125), "input_3250", 300.0, 600.0, "diagnostic", 6),
+        CachePolicy(
+            RegisterKey(4, 3250, 125), "input_3250", 300.0, 600.0, "diagnostic", 6
+        ),
     )
 
 
@@ -1372,9 +1378,7 @@ class CacheGatewayService:
     def stop(self) -> None:
         self._stop.set()
 
-    def observe_shine_request(
-        self, request: bytes, *, at: float | None = None
-    ) -> None:
+    def observe_shine_request(self, request: bytes, *, at: float | None = None) -> None:
         """Learn the native block timing used by the physical Shine."""
         key = self._key_from_request(request)
         if key is None and request == self._FC20_REQUEST:
@@ -1435,9 +1439,7 @@ class CacheGatewayService:
                 }
             )
         fc20 = self.fc20_cache.latest(self._FC20_REQUEST)
-        fc20_age = (
-            None if fc20 is None else max(0.0, current - fc20.captured_at)
-        )
+        fc20_age = None if fc20 is None else max(0.0, current - fc20.captured_at)
         return {
             "blocks": blocks,
             "fc20": {
@@ -1662,15 +1664,12 @@ class CacheGatewayService:
             start=key.start,
             count=key.count,
             physical_blocks=[
-                {"start": block.start, "count": block.count}
-                for block in physical_keys
+                {"start": block.start, "count": block.count} for block in physical_keys
             ],
         )
         for physical_key in physical_keys:
             with self._lock:
-                block_cached = self.cache.read(
-                    physical_key, now=now, max_age=max_age
-                )
+                block_cached = self.cache.read(physical_key, now=now, max_age=max_age)
                 state = self._inflight.get(physical_key)
                 needs_refresh = force_refresh or block_cached is None
                 owner = needs_refresh and state is None
@@ -1915,7 +1914,9 @@ class CacheGatewayService:
         key = self._write_key(request)
         if key is None:
             response = self._exception_response(request, 0x03)
-            return GatewayResult("failed", client, response=response, reason="malformed_write")
+            return GatewayResult(
+                "failed", client, response=response, reason="malformed_write"
+            )
         if not self.write_policy.allows(source, key):
             response = self._exception_response(request, 0x02)
             self._emit(
@@ -1927,7 +1928,9 @@ class CacheGatewayService:
                 start=key.start,
                 count=key.count,
             )
-            return GatewayResult("failed", client, response=response, reason="write_denied")
+            return GatewayResult(
+                "failed", client, response=response, reason="write_denied"
+            )
 
         values = (
             (int.from_bytes(request[4:6], "big"),)
@@ -1941,9 +1944,7 @@ class CacheGatewayService:
             while self._write_active:
                 self._write_condition.wait()
             self._write_active = True
-        invalidated = self._invalidate_before_write(
-            key, client=client, source=source
-        )
+        invalidated = self._invalidate_before_write(key, client=client, source=source)
         try:
             started = time.monotonic()
             response = self.downstream.transact(
@@ -2087,7 +2088,10 @@ class CacheGatewayService:
                 cached_fc20 = self.fc20_cache.get(
                     self._FC20_REQUEST, now=now, max_age=self._FC20_MAX_AGE
                 )
-                if cached_fc20 is not None and cached_fc20.captured_at >= prediction.due_at - 1:
+                if (
+                    cached_fc20 is not None
+                    and cached_fc20.captured_at >= prediction.due_at - 1
+                ):
                     continue
                 self._emit(
                     "shine_prefetch_scheduled",
@@ -2196,11 +2200,16 @@ class CacheGatewayService:
                     request,
                     allow_unit_zero_wildcard=request[0] == 0,
                 )
-                write_ack = is_write and not physical_exception and find_standard_response(
-                    response,
-                    request,
-                    allow_unit_zero_wildcard=request[0] == 0,
-                ) is not None
+                write_ack = (
+                    is_write
+                    and not physical_exception
+                    and find_standard_response(
+                        response,
+                        request,
+                        allow_unit_zero_wildcard=request[0] == 0,
+                    )
+                    is not None
+                )
                 if is_write and write_key is not None:
                     readback_ok = self._post_write(
                         request,
@@ -2233,9 +2242,11 @@ class CacheGatewayService:
                         else (
                             "physical_exception"
                             if physical_exception
-                            else "physical_passthrough"
-                            if write_ack
-                            else "invalid_physical_write_response"
+                            else (
+                                "physical_passthrough"
+                                if write_ack
+                                else "invalid_physical_write_response"
+                            )
                         )
                     ),
                 )
@@ -2246,7 +2257,9 @@ class CacheGatewayService:
                     source=source,
                     invalidated=invalidated,
                 )
-            return GatewayResult("failed", client, reason="physical passthrough timeout")
+            return GatewayResult(
+                "failed", client, reason="physical passthrough timeout"
+            )
         finally:
             if is_write:
                 with self._write_condition:
@@ -2265,9 +2278,7 @@ class CacheGatewayService:
         if request != self._FC20_REQUEST:
             return GatewayResult("quarantined", client, reason="unprofiled_fc20")
         with self._fc20_lock:
-            cached = self.fc20_cache.get(
-                request, now=now, max_age=self._FC20_MAX_AGE
-            )
+            cached = self.fc20_cache.get(request, now=now, max_age=self._FC20_MAX_AGE)
             if cached is not None:
                 self._emit(
                     "fc20_cache_hit",
@@ -2280,12 +2291,13 @@ class CacheGatewayService:
                 return GatewayResult(
                     "served", client, response=cached.response, reason="fc20_cache"
                 )
-            response, error = self._refresh_fc20(
-                client=client, source=source, now=now
-            )
+            response, error = self._refresh_fc20(client=client, source=source, now=now)
             if response is None:
                 stale = self.fc20_cache.latest(request)
-                if stale is not None and now - stale.captured_at <= self._FC20_STALE_MAX_AGE:
+                if (
+                    stale is not None
+                    and now - stale.captured_at <= self._FC20_STALE_MAX_AGE
+                ):
                     self._emit(
                         "fc20_stale_fallback",
                         role="WARN",
@@ -2300,8 +2312,12 @@ class CacheGatewayService:
                         response=stale.response,
                         reason="fc20_stale_fallback",
                     )
-                return GatewayResult("failed", client, reason=error or "fc20 refresh failed")
-            return GatewayResult("served", client, response=response, reason="fc20_fresh")
+                return GatewayResult(
+                    "failed", client, reason=error or "fc20 refresh failed"
+                )
+            return GatewayResult(
+                "served", client, response=response, reason="fc20_fresh"
+            )
 
     def _refresh_fc20(
         self, *, client: str, source: str, now: float
@@ -2347,7 +2363,9 @@ class CacheGatewayService:
                 previous_age_s=(
                     None
                     if self.fc20_cache.latest(self._FC20_REQUEST) is None
-                    else round(now - self.fc20_cache.latest(self._FC20_REQUEST).captured_at, 3)
+                    else round(
+                        now - self.fc20_cache.latest(self._FC20_REQUEST).captured_at, 3
+                    )
                 ),
             )
             return None, self._last_fc20_error
@@ -2391,7 +2409,9 @@ class CacheGatewayService:
                 )
                 continue
             if due_policies:
-                policy = min(due_policies, key=lambda item: (item.priority, item.key.start))
+                policy = min(
+                    due_policies, key=lambda item: (item.priority, item.key.start)
+                )
                 with self._lock:
                     self._next_due[policy.key] = now + policy.interval
                 _, error = self._read_words(
@@ -2576,9 +2596,9 @@ class RawSerialBridge(threading.Thread):
                 self.events.emit(
                     event=f"{source_side}_serial_error",
                     role="WARN",
-                    port=self.shine_dev
-                    if source_side == "shine"
-                    else self.inverter_dev,
+                    port=(
+                        self.shine_dev if source_side == "shine" else self.inverter_dev
+                    ),
                     error=str(exc),
                 )
             self._close_side(source_side)
@@ -2852,10 +2872,7 @@ class ShineEndpoint(threading.Thread):
                     if (
                         result.status == "failed"
                         and not resp
-                        and not (
-                            result.reason
-                            and result.reason.startswith("physical")
-                        )
+                        and not (result.reason and result.reason.startswith("physical"))
                     ):
                         resp = add_crc(bytes([req[0], function | 0x80, 0x0B]))
                     if self.events:
@@ -3176,11 +3193,15 @@ def main():
     )
     args = ap.parse_args()
 
-    if args.mode in {
-        "cache+shine",
-        "cache+shine-direct",
-        "cache+shine-predictive",
-    } and not args.shine:
+    if (
+        args.mode
+        in {
+            "cache+shine",
+            "cache+shine-direct",
+            "cache+shine-predictive",
+        }
+        and not args.shine
+    ):
         ap.error(f"{args.mode} mode requires --shine")
     if args.mode != "legacy" and args.shine_policy == "raw-transparent":
         ap.error("raw-transparent Shine mode is only available in legacy mode")

@@ -31,9 +31,9 @@ def parse_scan(path: Path):
     input_: dict[int, int] = {}
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
-            if (m := HOLDING_RE.search(line)):
+            if m := HOLDING_RE.search(line):
                 holding[int(m.group(1))] = int(m.group(2))
-            elif (m := INPUT_RE.search(line)):
+            elif m := INPUT_RE.search(line):
                 input_[int(m.group(1))] = int(m.group(2))
     return holding, input_
 

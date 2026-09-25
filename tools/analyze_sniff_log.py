@@ -293,7 +293,11 @@ def analyze(
             continue
 
         is_tcp = is_tcp_client(ev.client_from) or is_tcp_client(ev.client_to)
-        if is_tcp and not include_tcp and not (client_filter and client_filter in client):
+        if (
+            is_tcp
+            and not include_tcp
+            and not (client_filter and client_filter in client)
+        ):
             continue
 
         cs = get_stats(client)
@@ -308,7 +312,9 @@ def analyze(
                 pending_unusual[(ev.func, ev.uid)].append(ev)
             if is_suspect_large(ev):
                 cs.large_frames += 1
-                desc = f"{ev.ts} {client} REQ large frame {ev.total_len}B func={ev.func}"
+                desc = (
+                    f"{ev.ts} {client} REQ large frame {ev.total_len}B func={ev.func}"
+                )
                 suspects.append(desc)
                 interesting_events.append((ev, desc))
             if ev.func == 0x06:
@@ -334,7 +340,9 @@ def analyze(
                 interesting_events.append((ev, desc))
             if is_suspect_large(ev):
                 cs.large_frames += 1
-                desc = f"{ev.ts} {client} RSP large frame {ev.total_len}B func={ev.func}"
+                desc = (
+                    f"{ev.ts} {client} RSP large frame {ev.total_len}B func={ev.func}"
+                )
                 suspects.append(desc)
                 interesting_events.append((ev, desc))
             if detect_combined and ev.total_len >= combined_threshold:
@@ -408,7 +416,7 @@ def analyze(
             dt = (ev.ts - prev_ts).total_seconds()
             # Bar: 1 '#' per 0.5s, capped at 40 chars
             n = min(40, int(dt / 0.5))
-            bar = '#' * n
+            bar = "#" * n
             print(f"{bar} {dt:.3f}s")
         print(desc)
         prev_ts = ev.ts
@@ -435,9 +443,7 @@ def analyze(
             print(
                 f"REQ {req_ev.ts} func={req_ev.func} uid={uid} len={req_ev.total_len} hex={req_ev.hex[:80]}"
             )
-            print(
-                f"  RSP {rsp_ev.ts} len={rsp_ev.total_len} hex={rsp_ev.hex[:80]}"
-            )
+            print(f"  RSP {rsp_ev.ts} len={rsp_ev.total_len} hex={rsp_ev.hex[:80]}")
         print()
     if pending_list:
         print("=== Unmatched unusual requests (no response seen) ===")

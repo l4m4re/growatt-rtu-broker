@@ -123,16 +123,24 @@ def analyze(
             for offset in all_offsets(data, needle):
                 start = max(0, offset - context)
                 end = min(len(data), offset + len(needle) + context)
-                hits.append({
-                    "search_kind": search_kind,
-                    "encoding": encoding,
-                    "offset": offset,
-                    "length": len(needle),
-                    "hex_context": data[start:end].hex(),
-                    "printable_context": "".join(chr(value) if 32 <= value < 127 else "." for value in data[start:end]),
-                    "candidate_region": region(offset),
-                })
-    partials = {token: all_offsets(data, token.encode("ascii")) for token in ("XGD", "xgd", "CCN", "ccn")}
+                hits.append(
+                    {
+                        "search_kind": search_kind,
+                        "encoding": encoding,
+                        "offset": offset,
+                        "length": len(needle),
+                        "hex_context": data[start:end].hex(),
+                        "printable_context": "".join(
+                            chr(value) if 32 <= value < 127 else "."
+                            for value in data[start:end]
+                        ),
+                        "candidate_region": region(offset),
+                    }
+                )
+    partials = {
+        token: all_offsets(data, token.encode("ascii"))
+        for token in ("XGD", "xgd", "CCN", "ccn")
+    }
     return {
         "path": str(path.resolve()),
         "size": len(data),
@@ -148,7 +156,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", type=Path)
     parser.add_argument("--serial", default="XGD6CCN109")
-    parser.add_argument("--mac", help="MAC address to search in raw and common text forms")
+    parser.add_argument(
+        "--mac", help="MAC address to search in raw and common text forms"
+    )
     parser.add_argument("--chip-id", help="ESP8266 chip ID, for example 0x0074f8de")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()

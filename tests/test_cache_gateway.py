@@ -390,9 +390,7 @@ def test_successful_shine_write_invalidates_overlapping_cache() -> None:
     result = gateway.handle_shine_passthrough(request)
 
     assert result.status == "served"
-    assert gateway.cache.read(
-        RegisterKey(3, 180, 1), now=10.1, max_age=5.0
-    ) is None
+    assert gateway.cache.read(RegisterKey(3, 180, 1), now=10.1, max_age=5.0) is None
 
 
 def test_cache_gateway_is_explicitly_non_default() -> None:
@@ -479,9 +477,7 @@ def test_cache_gateway_reads_do_not_require_a_shine_client() -> None:
 
     assert production.status == "served"
     assert development.status == "served"
-    assert [request.hex() for request in downstream.requests] == [
-        "01040bb8007db22a"
-    ]
+    assert [request.hex() for request in downstream.requests] == ["01040bb8007db22a"]
 
 
 def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
@@ -489,9 +485,7 @@ def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
     gateway = CacheGatewayService(downstream)
     request = add_crc(bytes.fromhex("01040c1d0020"))
 
-    result = gateway.handle_standard_request(
-        request, client="HA", source="PROD_TCP"
-    )
+    result = gateway.handle_standard_request(request, client="HA", source="PROD_TCP")
 
     assert result.status == "served"
     assert result.read is not None
@@ -501,9 +495,7 @@ def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
         bytes.fromhex("01040c35007d2375"),
     ]
 
-    repeated = gateway.handle_standard_request(
-        request, client="HA", source="PROD_TCP"
-    )
+    repeated = gateway.handle_standard_request(request, client="HA", source="PROD_TCP")
 
     assert repeated.status == "served"
     assert downstream.requests == [
@@ -608,8 +600,11 @@ def test_predictive_prefetch_refreshes_next_native_shine_block() -> None:
     gateway._run_predictive_prefetch(28.0)
 
     assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
-    assert gateway.cache.read(
-        RegisterKey(4, 3000, 125),
-        now=time.monotonic(),
-        max_age=5.0,
-    ) is not None
+    assert (
+        gateway.cache.read(
+            RegisterKey(4, 3000, 125),
+            now=time.monotonic(),
+            max_age=5.0,
+        )
+        is not None
+    )

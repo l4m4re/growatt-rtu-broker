@@ -28,7 +28,10 @@ def sha256(data: bytes) -> str:
 
 
 def strings(data: bytes, minimum: int = 4) -> list[str]:
-    return [match.group().decode("ascii") for match in re.finditer(rb"[ -~]{%d,}" % minimum, data)]
+    return [
+        match.group().decode("ascii")
+        for match in re.finditer(rb"[ -~]{%d,}" % minimum, data)
+    ]
 
 
 def role(offset: int, size: int) -> tuple[str, str]:
@@ -86,12 +89,24 @@ def coalesced_intervals(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             current["end"] = record["end"]
             current["length"] += record["length"]
             current["changed_bytes"] += record["changed_bytes"]
-            current["changed_percent"] = round(current["changed_bytes"] / current["length"] * 100, 4)
+            current["changed_percent"] = round(
+                current["changed_bytes"] / current["length"] * 100, 4
+            )
         else:
-            intervals.append({key: record[key] for key in (
-                "start", "end", "length", "changed_bytes", "changed_percent",
-                "candidate_role", "confidence",
-            )})
+            intervals.append(
+                {
+                    key: record[key]
+                    for key in (
+                        "start",
+                        "end",
+                        "length",
+                        "changed_bytes",
+                        "changed_percent",
+                        "candidate_role",
+                        "confidence",
+                    )
+                }
+            )
     return intervals
 
 
@@ -102,8 +117,16 @@ def analyze(base_path: Path, target_path: Path) -> dict[str, Any]:
         raise ValueError("flash images must have equal size")
     sectors = sector_records(base, target)
     return {
-        "base": {"path": str(base_path.resolve()), "size": len(base), "sha256": sha256(base)},
-        "target": {"path": str(target_path.resolve()), "size": len(target), "sha256": sha256(target)},
+        "base": {
+            "path": str(base_path.resolve()),
+            "size": len(base),
+            "sha256": sha256(base),
+        },
+        "target": {
+            "path": str(target_path.resolve()),
+            "size": len(target),
+            "sha256": sha256(target),
+        },
         "sector_size": SECTOR_SIZE,
         "same_bytes": sum(a == b for a, b in zip(base, target)),
         "changed_bytes": sum(a != b for a, b in zip(base, target)),

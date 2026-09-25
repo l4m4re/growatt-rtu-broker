@@ -16,9 +16,9 @@ import json
 from bisect import bisect_left
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from analyze_sniff_log import Event, read_events
+from analyze_sniff_log import read_events
 
 
 WORD_FIELDS: Dict[str, int] = {
@@ -34,8 +34,25 @@ WORD_FIELDS: Dict[str, int] = {
 
 # Registers we aim to align with; keep the list small to avoid copying
 TARGET_REGS = {
-    3000, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009,
-    3025, 3092, 3093, 3171, 3173, 3174, 3175, 3176, 3179, 3181,
+    3000,
+    3002,
+    3003,
+    3004,
+    3005,
+    3006,
+    3007,
+    3008,
+    3009,
+    3025,
+    3092,
+    3093,
+    3171,
+    3173,
+    3174,
+    3175,
+    3176,
+    3179,
+    3181,
 }
 
 
@@ -47,7 +64,9 @@ class ShineFrame:
     words: List[int]
 
 
-def parse_logs(paths: List[str]) -> tuple[List[ShineFrame], Dict[int, Dict[str, List[float]]]]:
+def parse_logs(
+    paths: List[str],
+) -> tuple[List[ShineFrame], Dict[int, Dict[str, List[float]]]]:
     frames: List[ShineFrame] = []
     reg_series: Dict[int, Dict[str, List[float]]] = {}
     pending_reads: Dict[str, tuple[int, int]] = {}
@@ -56,7 +75,10 @@ def parse_logs(paths: List[str]) -> tuple[List[ShineFrame], Dict[int, Dict[str, 
         if ev.func == 0x20 and ev.role == "RSP":
             data = bytes.fromhex(ev.hex)
             payload = data[3:-2]
-            words = [int.from_bytes(payload[i : i + 2], "big", signed=False) for i in range(0, len(payload), 2)]
+            words = [
+                int.from_bytes(payload[i : i + 2], "big", signed=False)
+                for i in range(0, len(payload), 2)
+            ]
             frames.append(
                 ShineFrame(
                     ts=ev.ts.timestamp(),
@@ -95,7 +117,10 @@ def parse_logs(paths: List[str]) -> tuple[List[ShineFrame], Dict[int, Dict[str, 
                 continue
             bytecount = raw[2]
             data = raw[3 : 3 + bytecount]
-            regs = [int.from_bytes(data[i : i + 2], "big", signed=False) for i in range(0, len(data), 2)]
+            regs = [
+                int.from_bytes(data[i : i + 2], "big", signed=False)
+                for i in range(0, len(data), 2)
+            ]
             ts = ev.ts.timestamp()
             for offset, value in enumerate(regs):
                 reg_id = start + offset
@@ -108,7 +133,13 @@ def parse_logs(paths: List[str]) -> tuple[List[ShineFrame], Dict[int, Dict[str, 
     return frames, reg_series
 
 
-def lookup_reg(series: Dict[int, Dict[str, List[float]]], reg_id: int, ts: float, *, tolerance: float = 1.5) -> Optional[int]:
+def lookup_reg(
+    series: Dict[int, Dict[str, List[float]]],
+    reg_id: int,
+    ts: float,
+    *,
+    tolerance: float = 1.5,
+) -> Optional[int]:
     entry = series.get(reg_id)
     if not entry:
         return None
@@ -154,8 +185,14 @@ def determine_state(regs: Dict[int, Optional[int]], words: Dict[str, int]) -> st
     return "+".join(sorted(set(flags)))
 
 
-def bucketise(frame: ShineFrame, regs: Dict[int, Optional[int]], state: str) -> tuple[str, str, str]:
-    pv_metric = regs.get(3006) or regs.get(3008) or frame.words[21] if len(frame.words) > 21 else 0
+def bucketise(
+    frame: ShineFrame, regs: Dict[int, Optional[int]], state: str
+) -> tuple[str, str, str]:
+    pv_metric = (
+        regs.get(3006) or regs.get(3008) or frame.words[21]
+        if len(frame.words) > 21
+        else 0
+    )
     buck_metric = regs.get(3174) or frame.words[9] if len(frame.words) > 9 else 0
 
     def bucket(value: int, edges: Tuple[int, ...]) -> str:
@@ -169,12 +206,13 @@ def bucketise(frame: ShineFrame, regs: Dict[int, Optional[int]], state: str) -> 
     return pv_bucket, buck_bucket, state
 
 
-def select_samples(frames: List[ShineFrame], series: Dict[int, Dict[str, List[float]]]) -> List[dict]:
+def select_samples(
+    frames: List[ShineFrame], series: Dict[int, Dict[str, List[float]]]
+) -> List[dict]:
     candidates: List[dict] = []
     for frame in frames:
         reg_snapshot: Dict[int, Optional[int]] = {
-            reg: lookup_reg(series, reg, frame.ts)
-            for reg in sorted(TARGET_REGS)
+            reg: lookup_reg(series, reg, frame.ts) for reg in sorted(TARGET_REGS)
         }
         words_subset = extract_word_subset(frame.words)
         state = determine_state(reg_snapshot, words_subset)
@@ -184,7 +222,11 @@ def select_samples(frames: List[ShineFrame], series: Dict[int, Dict[str, List[fl
                 "timestamp": frame.iso,
                 "hex": frame.hex_payload,
                 "words": words_subset,
-                "registers": {str(reg): value for reg, value in reg_snapshot.items() if value is not None},
+                "registers": {
+                    str(reg): value
+                    for reg, value in reg_snapshot.items()
+                    if value is not None
+                },
                 "state": state,
                 "bucket": {
                     "pv_level": pv_bucket,
@@ -197,7 +239,11 @@ def select_samples(frames: List[ShineFrame], series: Dict[int, Dict[str, List[fl
     # Group by bucket and pick at most three samples per bucket (first, middle, last)
     by_bucket: Dict[tuple[str, str, str], List[dict]] = {}
     for entry in candidates:
-        key = (entry["bucket"]["pv_level"], entry["bucket"]["buck_level"], entry["bucket"]["state"])
+        key = (
+            entry["bucket"]["pv_level"],
+            entry["bucket"]["buck_level"],
+            entry["bucket"]["state"],
+        )
         by_bucket.setdefault(key, []).append(entry)
 
     selected: List[dict] = []
@@ -228,7 +274,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    paths = args.paths if args.paths else ["external/growatt-rtu-broker/broker-260925-2.log"]
+    paths = (
+        args.paths
+        if args.paths
+        else ["external/growatt-rtu-broker/broker-260925-2.log"]
+    )
     frames, reg_series = parse_logs(paths)
     if not frames:
         raise SystemExit("No Shine 0x20 frames found in provided logs")
@@ -248,7 +298,9 @@ def main() -> None:
 
     existing_sources = set(existing.get("source_logs", [])) | set(paths)
     existing_samples = existing.get("samples", [])
-    existing_keys = {(item.get("timestamp"), item.get("hex")) for item in existing_samples}
+    existing_keys = {
+        (item.get("timestamp"), item.get("hex")) for item in existing_samples
+    }
 
     new_additions = []
     for sample in samples:
@@ -270,7 +322,9 @@ def main() -> None:
     }
 
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"Appended {len(new_additions)} new samples to {out_path} (total: {len(existing_samples)})")
+    print(
+        f"Appended {len(new_additions)} new samples to {out_path} (total: {len(existing_samples)})"
+    )
 
 
 if __name__ == "__main__":

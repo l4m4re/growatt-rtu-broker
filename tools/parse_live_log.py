@@ -238,10 +238,8 @@ def summarise(
             regs = decode_registers_from_pdu_hex(record.get("hex", ""))
             if wants_req_link:
                 reqs = req_buffer.get(func) or []
-                related_req = reqs.pop(0) if reqs else None
-                req_addr = related_req.get("addr") if related_req else None
-            else:
-                req_addr = None
+                if reqs:
+                    reqs.pop(0)
 
             for offset, value in enumerate(regs):
                 reg_index = addr + offset

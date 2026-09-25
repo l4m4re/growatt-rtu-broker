@@ -1,5 +1,4 @@
 import json
-import asyncio
 import pytest
 import growatt_broker.backend as backend_module
 

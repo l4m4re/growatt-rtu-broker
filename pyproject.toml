@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "growatt-rtu-broker"
 version = "0.1.0"
-description = "Modbus Workbench prototype: bridge, sniff, and simulate Modbus RTU/TCP networks (initial focus on Growatt hardware)"
+description = "Growatt Pi in the Middle bridge, forensic capture, and simulator toolkit"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
-  { name = "Your Name" }
+  { name = "PiITM contributors" }
 ]
 dependencies = [
   "pyserial>=3.5",
@@ -18,14 +18,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "pytest",
+  "black==24.1.1",
+  "pytest>=8.0,<9",
   "pre-commit",
-  "ruff",
-  "black",
+  "ruff==0.2.0",
+  "pymodbus>=3.8,<4",
 ]
 test = [
-  "pytest>=8.0",
-  "pytest-asyncio>=0.23",
+  "pytest>=8.0,<9",
+  "pytest-asyncio>=0.23,<1",
+  "pymodbus>=3.8,<4",
 ]
 
 [tool.black]
@@ -37,14 +39,21 @@ line-length = 88
 target-version = "py311"
 
 [project.urls]
-Homepage = "https://github.com/yourname/growatt-rtu-broker"
-Issues = "https://github.com/yourname/growatt-rtu-broker/issues"
+Homepage = "https://github.com/l4m4re/growatt-rtu-broker"
+Issues = "https://github.com/l4m4re/growatt-rtu-broker/issues"
 
 [project.scripts]
 growatt-broker = "growatt_broker.broker:main"
 
 [tool.pytest.ini_options]
 addopts = "-q"
+asyncio_mode = "auto"
+markers = [
+  "enable_socket: test opens loopback sockets",
+]
+
+[tool.setuptools.packages.find]
+include = ["growatt_broker*"]
 
 [tool.setuptools.package-data]
 "growatt_broker.simulator" = ["*.json", "datasets/*.json"]

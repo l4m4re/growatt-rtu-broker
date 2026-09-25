@@ -39,8 +39,13 @@ class ShineForensicsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "shine.bin"
             path.write_bytes(data)
-            result = analyze_identity(path, "XGD6CCN109", mac="e8:68:e7:74:f8:de", chip_id="0x0074f8de")
+            result = analyze_identity(
+                path, "XGD6CCN109", mac="e8:68:e7:74:f8:de", chip_id="0x0074f8de"
+            )
 
-        matches = {(hit["search_kind"], hit["encoding"], hit["offset"]) for hit in result["exact_or_encoded_hits"]}
+        matches = {
+            (hit["search_kind"], hit["encoding"], hit["offset"])
+            for hit in result["exact_or_encoded_hits"]
+        }
         self.assertIn(("mac", "mac_raw", 8), matches)
         self.assertIn(("chip_id", "chip_id_24_be", 11), matches)

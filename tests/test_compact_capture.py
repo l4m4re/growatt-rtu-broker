@@ -18,8 +18,6 @@ def test_compact_capture_keeps_last_value_per_register() -> None:
 
 
 def test_compact_capture_masks_register_values() -> None:
-    result = compact(
-        [{"op": "read_input", "addr": 1, "regs": [65536, -1]}]
-    )
+    result = compact([{"op": "read_input", "addr": 1, "regs": [65536, -1]}])
 
     assert result["input"] == {"1": 0, "2": 65535}
