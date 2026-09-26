@@ -43,8 +43,9 @@ def test_current_x2_profile_uses_observed_cadence_for_background_fallback() -> N
 
     config = load_installation_config(path)
 
-    assert {block.interval_s for block in config.poll_plan} == {10.0}
-    assert {block.max_age_s for block in config.poll_plan} == {30.0}
+    assert {block.interval_s for block in config.poll_plan} == {300.0}
+    assert {block.max_age_s for block in config.poll_plan} == {600.0}
+    assert config.metadata["native_cadence_s"] == 10.0
 
 
 def test_setup_observer_exports_stable_unknown_block(tmp_path: Path) -> None:

@@ -1312,6 +1312,7 @@ class CacheGatewayService:
         events: EventHub | None = None,
         policies: tuple[CachePolicy, ...] | None = None,
         predictive_prefetch: bool = False,
+        native_cadence_s: float | None = None,
         write_policy: WritePolicy | None = None,
         setup_observer: SetupPlanObserver | None = None,
     ) -> None:
@@ -1330,6 +1331,9 @@ class CacheGatewayService:
         )
         self._policy_by_key = {policy.key: policy for policy in self.policies}
         self.predictive_prefetch = predictive_prefetch
+        self.native_cadence_s = (
+            None if native_cadence_s is None else max(0.1, float(native_cadence_s))
+        )
         self.write_policy = write_policy or WritePolicy()
         self.setup_observer = setup_observer
         self.shine_pattern = ShinePatternObserver(jitter_tolerance=0.75)
@@ -1401,20 +1405,32 @@ class CacheGatewayService:
 
     def _native_poll_cadence(self) -> float:
         """Return the shortest configured native cadence for Shine liveness."""
+        if self.native_cadence_s is not None:
+            return self.native_cadence_s
         intervals = [policy.interval for policy in self.policies]
         if self._fc20_policy is not None:
             intervals.append(self._fc20_policy.interval)
         return min(intervals, default=self._FC20_INTERVAL)
+
+    def _background_interval(self, policy: CachePolicy) -> float:
+        """Return the fallback interval used when Shine traffic is absent."""
+        return self.native_cadence_s or policy.interval
+
+    def _background_fc20_interval(self) -> float:
+        """Return the fallback FC20 interval used without Shine traffic."""
+        return self.native_cadence_s or self._fc20_interval()
 
     def _stagger_initial_refreshes(self) -> None:
         """Spread the first fallback cycle across each configured cadence."""
         now = time.monotonic()
         groups: dict[float, list[tuple[str, RegisterKey]]] = {}
         for policy in self.policies:
-            groups.setdefault(policy.interval, []).append(("standard", policy.key))
+            groups.setdefault(self._background_interval(policy), []).append(
+                ("standard", policy.key)
+            )
         if self._fc20_policy is not None:
             fc20_key = RegisterKey(0x20, 0, 100)
-            groups.setdefault(self._fc20_policy.interval, []).append(
+            groups.setdefault(self._background_fc20_interval(), []).append(
                 ("fc20", fc20_key)
             )
         for interval, items in groups.items():
@@ -1457,7 +1473,9 @@ class CacheGatewayService:
                 return
             if current is None:
                 self.policies = (*self.policies, policy)
-                self._next_due[policy.key] = time.monotonic() + policy.interval
+                self._next_due[policy.key] = time.monotonic() + self._background_interval(
+                    policy
+                )
             else:
                 self.policies = tuple(
                     policy if item.key == policy.key else item for item in self.policies
@@ -1492,7 +1510,7 @@ class CacheGatewayService:
                     "start": policy.key.start,
                     "count": policy.key.count,
                     "service_class": policy.service_class,
-                    "target_interval_s": policy.interval,
+                    "target_interval_s": self._background_interval(policy),
                     "hard_max_age_s": policy.max_age,
                     "age_s": age,
                     "fresh": age is not None and age <= policy.max_age,
@@ -1507,9 +1525,7 @@ class CacheGatewayService:
                 }
             )
         fc20_policy = self._fc20_policy
-        fc20_interval = (
-            self._FC20_INTERVAL if fc20_policy is None else fc20_policy.interval
-        )
+        fc20_interval = self._background_fc20_interval()
         fc20_max_age = (
             self._FC20_MAX_AGE if fc20_policy is None else fc20_policy.max_age
         )
@@ -1978,7 +1994,11 @@ class CacheGatewayService:
                 policy = self._policy_by_key.get(key)
                 if policy is None:
                     continue
-                due_at = now if immediate else now + policy.interval
+                due_at = (
+                    now
+                    if immediate
+                    else now + self._background_interval(policy)
+                )
                 self._next_due[key] = due_at
                 scheduled.append(
                     {
@@ -2564,7 +2584,7 @@ class CacheGatewayService:
                     )
                     if cached_fc20 is not None:
                         self._fc20_next_due = time.monotonic() + (
-                            self._fc20_interval()
+                            self._background_fc20_interval()
                         )
                         continue
                 with self._fc20_lock:
@@ -2572,7 +2592,7 @@ class CacheGatewayService:
                         client="PREFETCH", source="BACKGROUND", now=now
                     )
                 self._fc20_next_due = time.monotonic() + (
-                    self._fc20_interval() if error is None else 5.0
+                    self._background_fc20_interval() if error is None else 5.0
                 )
                 continue
             if due_policies:
@@ -2580,7 +2600,9 @@ class CacheGatewayService:
                     due_policies, key=lambda item: (item.priority, item.key.start)
                 )
                 with self._lock:
-                    self._next_due[policy.key] = now + policy.interval
+                    self._next_due[policy.key] = now + self._background_interval(
+                        policy
+                    )
                 _, error = self._read_words(
                     policy.key,
                     client="PREFETCH",
@@ -2591,7 +2613,7 @@ class CacheGatewayService:
                 if error is not None:
                     with self._lock:
                         self._next_due[policy.key] = time.monotonic() + min(
-                            policy.interval, 5.0
+                            self._background_interval(policy), 5.0
                         )
                 continue
             deadlines = [*self._next_due.values()]
@@ -3532,6 +3554,11 @@ def main():
                     else None
                 ),
                 predictive_prefetch=args.mode == "cache+shine-predictive",
+                native_cadence_s=(
+                    installation_config.metadata.get("native_cadence_s")
+                    if installation_config is not None
+                    else None
+                ),
                 write_policy=WritePolicy(
                     prod_tcp_enabled=args.prod_tcp_writes == "enabled",
                     dev_tcp_enabled=args.dev_tcp_writes == "enabled",

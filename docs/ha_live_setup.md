@@ -79,11 +79,12 @@ The reviewed profile produced on 2026-09-26 is
 `configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json`. It contains
 twenty observed FC03, FC04, and FC20 blocks. The current X2 sequence repeats
 approximately every ten seconds per native block. Predictive prefetch follows
-that observed cadence, and the configured background intervals use the same
-cadence when Shine traffic is absent. While Shine is active, the background
-path reuses the predictive refreshes instead of issuing duplicate physical
-reads. Production TCP, development TCP, and Shine writes are enabled. The
-previous live and setup containers remain named rollback containers on the Pi.
+that observed cadence. The profile's `metadata.native_cadence_s` value drives
+the fallback background poller when Shine traffic is absent. While Shine is
+active, the background path reuses the predictive refreshes instead of issuing
+duplicate physical reads. Production TCP, development TCP, and Shine writes
+are enabled. The previous live and setup containers remain named rollback
+containers on the Pi.
 
 ## Build and run
 

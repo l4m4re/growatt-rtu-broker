@@ -648,6 +648,15 @@ def test_background_fallback_considers_recent_shine_cadence_active() -> None:
     assert not gateway._shine_is_active(131.0)
 
 
+def test_native_cadence_overrides_background_policy_intervals() -> None:
+    gateway = _gateway(
+        _FakeDownstream(), predictive_prefetch=True, native_cadence_s=10.0
+    )
+
+    assert gateway._native_poll_cadence() == 10.0
+    assert gateway._background_interval(gateway.policies[0]) == 10.0
+
+
 def test_background_poll_reuses_recent_predictive_refresh() -> None:
     gateway = _gateway(_FakeDownstream(), predictive_prefetch=True)
     request = add_crc(bytes.fromhex("01040bb8007d"))
