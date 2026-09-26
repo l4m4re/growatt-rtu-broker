@@ -1344,6 +1344,7 @@ class CacheGatewayService:
             policy.key: 0.0 for policy in self.policies
         }
         self._fc20_next_due = 0.0
+        self._stagger_initial_refreshes()
         self._last_errors: dict[RegisterKey, str | None] = {}
         self._last_fc20_error: str | None = None
         self._stop = threading.Event()
@@ -1404,6 +1405,25 @@ class CacheGatewayService:
         if self._fc20_policy is not None:
             intervals.append(self._fc20_policy.interval)
         return min(intervals, default=self._FC20_INTERVAL)
+
+    def _stagger_initial_refreshes(self) -> None:
+        """Spread the first fallback cycle across each configured cadence."""
+        now = time.monotonic()
+        groups: dict[float, list[tuple[str, RegisterKey]]] = {}
+        for policy in self.policies:
+            groups.setdefault(policy.interval, []).append(("standard", policy.key))
+        if self._fc20_policy is not None:
+            fc20_key = RegisterKey(0x20, 0, 100)
+            groups.setdefault(self._fc20_policy.interval, []).append(
+                ("fc20", fc20_key)
+            )
+        for interval, items in groups.items():
+            for index, (kind, key) in enumerate(items):
+                due_at = now + interval * index / len(items)
+                if kind == "fc20":
+                    self._fc20_next_due = due_at
+                else:
+                    self._next_due[key] = due_at
 
     def _shine_is_active(self, now: float) -> bool:
         """Whether recent Shine traffic makes forced background reads redundant."""
