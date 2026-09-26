@@ -73,6 +73,70 @@ python -m growatt_broker.cli run --mode dataset \
 
 Use `growatt-broker --help` for the live command's complete option list.
 
+## Installation configurations and setup mode
+
+An installation configuration is one reviewable JSON file containing the
+inverter/logger identification, serial settings, and complete native poll
+plan. Example configurations are in
+[`configs/examples/`](configs/examples/). The old ShineWiFi-X and current
+ShineWiLan-X2 examples deliberately omit device serial numbers. The X2
+candidate is write-disabled/read-only while it is in setup mode; the old
+reviewed profile demonstrates the explicit enabled/transparent settings.
+
+The same file controls write policy for the production TCP listener, the
+development TCP listener, and Shine. Use `"disabled"` for either TCP value,
+or `"read-only"` for Shine, when setup or a canary must not forward writes.
+The older Docker environment variables (`PROD_TCP_WRITES`,
+`DEV_TCP_WRITES`, and `SHINE_POLICY`) remain command-line overrides for
+deployments that have not migrated to an installation file.
+
+Live mode uses the approved plan without changing it:
+
+```bash
+growatt-broker --config /share/growatt-broker/installation.json
+```
+
+Setup mode observes Shine and TCP reads, adds stable unknown register blocks
+to the in-memory cache plan, and keeps the original configuration unchanged.
+The X2 example intentionally starts with an empty `poll_plan`; FC03, FC04,
+and FC20 blocks are learned from the actual Shine traffic. Send `SIGUSR2` to
+export the candidate configuration:
+
+```bash
+growatt-broker \
+  --config /share/growatt-broker/installation.json \
+  --operation-mode setup \
+  --setup-export /share/growatt-broker/installation.candidate.json
+kill -USR2 <broker-pid>
+```
+
+Only a reviewed candidate should be promoted to live mode. Setup mode does
+not initiate background writes and does not replace the configured profile
+automatically. Client-originated writes remain controlled by the configured
+`write_policy` (set it to disabled/read-only for a write-free observation run).
+
+The learned live profile is recorded in
+[`configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json`](configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json).
+It contains the twenty observed FC03/FC04/FC20 blocks for the current
+MIN 6000TL-XH firmware (`ALBA18010122`) and ShineWiLan-X2 firmware
+(`7.6.2.5`), with the FC03 `192/1` subset covered by the configured
+`180/20` block. Its background refresh is deliberately conservative at five
+minutes; predictive prefetch follows the observed approximately twenty-second
+Shine sequence. The live RPi currently uses this profile with production TCP,
+development TCP, and Shine writes enabled.
+
+The helper can mount the configuration on the RPi and write the candidate to a
+separate host path:
+
+```bash
+CONFIG_PATH=/share/growatt-rtu-broker/configs/examples/growatt-min6000tl-xh-shinewilan-x2-current.json \
+OPERATION_MODE=setup \
+SETUP_EXPORT_PATH=/share/growatt-broker-x2.candidate.json \
+docker/run_broker.sh
+```
+
+Review the exported file before changing `OPERATION_MODE` to `live`.
+
 ## Local simulator
 
 The simulator serves a small deterministic register dataset over a pseudo

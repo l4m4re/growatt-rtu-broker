@@ -9,9 +9,21 @@ from growatt_broker.broker import (
     TCPServer,
     WritePolicy,
     add_crc,
-    native_min_6000tl_xh_plan,
 )
 from growatt_broker.cache_gateway import RegisterKey
+from growatt_broker.configuration import load_installation_config
+
+
+OLD_CONFIG = load_installation_config(
+    __file__.replace(
+        "tests/test_broker_writes.py",
+        "configs/examples/growatt-min6000tl-xh-shinewifi-x-old.json",
+    )
+)
+
+
+def _gateway(downstream: object, **kwargs: object) -> CacheGatewayService:
+    return CacheGatewayService(downstream, policies=OLD_CONFIG.policies(), **kwargs)  # type: ignore[arg-type]
 
 
 class WriteDownstream:
@@ -35,7 +47,7 @@ class WriteDownstream:
 
 def test_fc06_is_physically_written_and_read_back() -> None:
     downstream = WriteDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     gateway.cache.put_block(
         RegisterKey(3, 180, 20),
         range(20),
@@ -85,7 +97,7 @@ def test_write_invalidates_cache_before_physical_transaction() -> None:
             return super().transact(request, **kwargs)
 
     downstream = InspectingDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     gateway.cache.put_block(
         RegisterKey(3, 180, 20),
         range(20),
@@ -100,7 +112,7 @@ def test_write_invalidates_cache_before_physical_transaction() -> None:
 
 def test_fc10_preserves_values_and_uses_native_read_back() -> None:
     downstream = WriteDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     request = add_crc(bytes.fromhex("01100be000020400010002"))
 
     result = gateway.handle_write_request(request, client="TCP:prod", source="PROD_TCP")
@@ -113,7 +125,7 @@ def test_fc10_preserves_values_and_uses_native_read_back() -> None:
 
 def test_write_policy_allows_unknown_holding_range_when_enabled() -> None:
     downstream = WriteDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     request = add_crc(bytes.fromhex("010600c80001"))
 
     result = gateway.handle_write_request(request, client="TCP:dev", source="DEV_TCP")
@@ -130,7 +142,7 @@ def test_write_policy_can_disable_each_tcp_source() -> None:
             prod_tcp_enabled=source != "PROD_TCP",
             dev_tcp_enabled=source != "DEV_TCP",
         )
-        gateway = CacheGatewayService(downstream, write_policy=policy)
+        gateway = _gateway(downstream, write_policy=policy)
 
         result = gateway.handle_write_request(request, client="TCP", source=source)
 
@@ -143,7 +155,7 @@ def test_write_policy_can_disable_each_tcp_source() -> None:
 def test_write_timeout_returns_gateway_exception_without_fake_success() -> None:
     request = add_crc(bytes.fromhex("010600bc0001"))
     downstream = WriteDownstream(fail_write=request)
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
 
     result = gateway.handle_write_request(request, client="TCP:dev", source="DEV_TCP")
 
@@ -168,7 +180,7 @@ def test_physical_write_exception_is_propagated() -> None:
             return super().transact(request, **kwargs)
 
     downstream = ExceptionDownstream()
-    result = CacheGatewayService(downstream).handle_write_request(
+    result = _gateway(downstream).handle_write_request(
         request, client="TCP:dev", source="DEV_TCP"
     )
 
@@ -187,7 +199,7 @@ def test_physical_read_exception_is_returned_and_not_cached() -> None:
             return add_crc(bytes([request[0], request[1] | 0x80, 0x01]))
 
     downstream = ReadExceptionDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     request = add_crc(bytes.fromhex("010300bc0001"))
 
     first = gateway.handle_standard_request(request, client="TCP:dev", source="DEV_TCP")
@@ -216,7 +228,7 @@ def test_lost_write_ack_reconciles_cache_but_stays_failed() -> None:
             return super().transact(request, **kwargs)
 
     downstream = LostAckDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     gateway.cache.put_block(
         RegisterKey(3, 180, 20),
         range(20),
@@ -249,7 +261,7 @@ def test_physical_write_exception_reconciles_cache() -> None:
             return super().transact(request, **kwargs)
 
     downstream = RejectingDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     gateway.cache.put_block(
         RegisterKey(3, 180, 20),
         range(20),
@@ -273,7 +285,7 @@ def test_physical_write_exception_reconciles_cache() -> None:
 
 def test_fc10_reconciles_all_overlapping_native_blocks() -> None:
     downstream = WriteDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     for start, count in ((180, 20), (209, 15)):
         gateway.cache.put_block(
             RegisterKey(3, start, count),
@@ -311,7 +323,7 @@ def test_invalid_physical_write_response_returns_gateway_exception() -> None:
             self.kwargs.append(kwargs)
             return b"invalid"
 
-    result = CacheGatewayService(InvalidResponseDownstream()).handle_write_request(
+    result = _gateway(InvalidResponseDownstream()).handle_write_request(
         request, client="TCP:dev", source="DEV_TCP"
     )
 
@@ -332,7 +344,7 @@ def test_failed_readback_leaves_holding_cache_invalidated() -> None:
             return b""
 
     downstream = ReadbackFailureDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     gateway.cache.put_block(
         RegisterKey(3, 180, 20),
         range(20),
@@ -353,7 +365,7 @@ def test_failed_readback_leaves_holding_cache_invalidated() -> None:
 def test_prod_and_dev_tcp_use_same_write_gateway_policy() -> None:
     for source in ("PROD_TCP", "DEV_TCP"):
         downstream = WriteDownstream()
-        gateway = CacheGatewayService(downstream)
+        gateway = _gateway(downstream)
         request = add_crc(bytes.fromhex("010600bc0001"))
 
         result = gateway.handle_write_request(
@@ -366,7 +378,7 @@ def test_prod_and_dev_tcp_use_same_write_gateway_policy() -> None:
 
 def test_tcp_server_propagates_physical_write_response() -> None:
     downstream = WriteDownstream()
-    server = TCPServer("127.0.0.1", 0, downstream, source="DEV_TCP", gateway=CacheGatewayService(downstream))  # type: ignore[arg-type]
+    server = TCPServer("127.0.0.1", 0, downstream, source="DEV_TCP", gateway=_gateway(downstream))  # type: ignore[arg-type]
     server_side, client_side = socket.socketpair()
     thread = threading.Thread(target=server.handle, args=(server_side,))
     thread.start()
@@ -401,7 +413,7 @@ def test_fc20_failed_refresh_keeps_bounded_stale_object() -> None:
             return response
 
     downstream = FC20Downstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     first = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=0.0)
     stale = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=20.0)
     expired = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=301.0)
@@ -426,7 +438,7 @@ def test_read_waits_while_write_and_readback_are_unresolved() -> None:
             return super().transact(request, **kwargs)
 
     downstream = BlockingDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     gateway.cache.put_block(
         RegisterKey(3, 180, 20),
         range(20),
@@ -462,7 +474,7 @@ def test_read_waits_while_write_and_readback_are_unresolved() -> None:
 
 
 def test_autonomous_plan_prioritizes_fast_pages_and_exposes_ems_age() -> None:
-    plan = native_min_6000tl_xh_plan()
+    plan = OLD_CONFIG.policies()
     fast = {policy.name: policy for policy in plan}
 
     assert fast["input_3000"].interval <= 10
@@ -474,7 +486,7 @@ def test_autonomous_plan_prioritizes_fast_pages_and_exposes_ems_age() -> None:
 
 def test_autonomous_poller_refreshes_without_client_requests() -> None:
     downstream = WriteDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     gateway.start()
     try:
         deadline = time.monotonic() + 1

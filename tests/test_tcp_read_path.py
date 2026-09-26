@@ -11,6 +11,15 @@ from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.framer import FramerType
 
 from growatt_broker.broker import CacheGatewayService, EventHub, TCPServer, add_crc
+from growatt_broker.configuration import load_installation_config
+
+
+OLD_POLICIES = load_installation_config(
+    __file__.replace(
+        "tests/test_tcp_read_path.py",
+        "configs/examples/growatt-min6000tl-xh-shinewifi-x-old.json",
+    )
+).policies()
 
 
 class FakeDownstream:
@@ -173,7 +182,7 @@ def test_physical_read_exception_keeps_tcp_connection_usable() -> None:
 
 def test_duplicate_reads_are_served_from_the_shared_register_cache() -> None:
     downstream = FakeBlockDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = CacheGatewayService(downstream, policies=OLD_POLICIES)
     server = TCPServer(
         "127.0.0.1",
         0,

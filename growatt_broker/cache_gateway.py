@@ -78,6 +78,18 @@ class RegisterKey:
 
 
 @dataclass(frozen=True)
+class CachePolicy:
+    """Background refresh policy for one complete native register block."""
+
+    key: RegisterKey
+    name: str
+    interval: float
+    max_age: float
+    service_class: str = "monitoring"
+    priority: int = 5
+
+
+@dataclass(frozen=True)
 class RegisterSnapshot:
     key: RegisterKey
     words: tuple[int, ...]
@@ -573,6 +585,7 @@ class ShineVirtualInverterAdapter:
         request_handler: Callable[[bytes, float], GatewayResult] | None = None,
         fc20_handler: Callable[[bytes, float], GatewayResult] | None = None,
         passthrough_handler: Callable[[bytes, float], GatewayResult] | None = None,
+        allow_writes: bool = True,
     ) -> None:
         self.coordinator = coordinator
         self.discovery_profiles = {
@@ -582,6 +595,7 @@ class ShineVirtualInverterAdapter:
         self.request_handler = request_handler
         self.fc20_handler = fc20_handler
         self.passthrough_handler = passthrough_handler
+        self.allow_writes = allow_writes
         self.mode = BrokerMode.SHINE_RECOVERING
 
     def _passthrough(self, frame: bytes, now: float, reason: str) -> GatewayResult:
@@ -611,6 +625,10 @@ class ShineVirtualInverterAdapter:
             )
         function = frame[1]
         if function in (0x06, 0x10):
+            if not self.allow_writes:
+                return GatewayResult(
+                    "quarantined", "SHINE", reason="shine_write_disabled"
+                )
             return self._passthrough(frame, now, "write_not_allowed")
         if function == 0x20:
             if self.fc20_handler is not None:

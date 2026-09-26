@@ -8,7 +8,7 @@ The repository is a transport, observability, simulator, and deployment
 project. It is not the Home Assistant integration and it is not the authority
 for register names or inverter semantics.
 
-## Current status — 2026-09-25
+## Current status — 2026-09-26
 
 ### Implemented
 
@@ -22,11 +22,19 @@ for register names or inverter semantics.
   coherent write result is returned;
 - Shine cadence observation and predictive native-block prefetch in the
   opt-in predictive profile;
+- explicit installation JSON configurations for the poll plan, transport,
+  inverter, and logger combination;
+- live mode with an approved installation plan and setup mode that observes
+  Shine/TCP traffic, adapts the in-memory plan, and exports a candidate;
 - standalone package installation, simulator fixtures, tests, Black/Ruff
   checks, and CI workflow;
 - bounded ShineWiLan-X2 raw bridge evidence on the live Raspberry Pi;
 - a read-only candidate canary built on the RPi, read on ports 5020/5021, and
   rolled back to the known-good container (see the acceptance record).
+- a learned current-firmware X2 profile with twenty observed FC03/FC04/FC20
+  blocks (nineteen configured after removing one covered subset) is live on
+  the RPi; all three write paths are enabled and monitored with read-after-
+  write evidence.
 
 ### Known limits
 
@@ -40,6 +48,8 @@ for register names or inverter semantics.
 - there is no authentication or encryption on the Modbus TCP listeners;
 - the live reference profile is proven on one installation and is not a
   generic configuration for every Growatt model.
+- setup candidates still require review and a controlled canary before live
+  promotion; the broker does not infer register semantics from observations.
 
 ## Release work
 

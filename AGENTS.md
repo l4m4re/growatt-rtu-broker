@@ -68,6 +68,17 @@ The inverter uses its stable `/dev/serial/by-id` alias. The ShineWiLan-X2 must
 use its physical `/dev/serial/by-path` alias because it has no unique USB
 serial number. No public example may depend on `ttyUSB0` or `ttyUSB1`.
 
+Installation behavior is configured as one reviewable JSON document rather
+than separate logger and inverter profile databases. The example configurations
+under `configs/examples/` capture known combinations, including the old
+ShineWiFi-X/old MIN 6000TL-XH firmware pair and the current X2 candidate. Live
+mode uses the approved `poll_plan` unchanged. Setup mode observes Shine and
+TCP requests, temporarily extends the in-memory plan for stable unknown
+blocks, and exports a candidate with `SIGUSR2`; it never replaces the live
+configuration automatically. TCP and Shine write policy are part of the same
+installation configuration; command-line values may override them for a
+deliberate test.
+
 The raw X2 bridge test on 2026-09-25 forwarded valid traffic for more than ten
 minutes without timeout, CRC, exception, or serial-reopen events. The portal
 became healthy after a Shine reset. This proves a useful diagnostic boundary,

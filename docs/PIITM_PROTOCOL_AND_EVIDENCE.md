@@ -38,6 +38,12 @@ TCP: 5020 production, 5021 development, 5700 JSONL sniff stream
 mode: cache+shine-predictive
 ```
 
+The poll blocks and write permissions are selected by one installation JSON
+configuration. The old ShineWiFi-X/old-firmware plan and the current X2
+candidate are kept under [`configs/examples/`](../configs/examples/). A setup
+run can observe unknown standard blocks and export a candidate, but promotion
+to live mode remains a human review and canary step.
+
 Both USB adapters are CH340-class and have no unique serial number. The
 physical path is therefore part of the deployment configuration. A `ttyUSB`
 number is not a stable identity.

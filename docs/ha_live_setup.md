@@ -60,6 +60,28 @@ The values above are the 2026-09-25 reference profile. Start with the
 known-good deployment values for the actual inverter and Shine firmware;
 `MIN_PERIOD`, timeout, and background polling cadence are separate concepts.
 
+For an installation whose Shine poll set is not yet known, use the X2 example
+in setup mode. It has an empty `poll_plan`, so the broker learns complete FC03,
+FC04, and FC20 blocks from the physical Shine stream:
+
+```bash
+CONFIG_PATH=/share/growatt-rtu-broker/configs/examples/growatt-min6000tl-xh-shinewilan-x2-current.json
+OPERATION_MODE=setup
+SETUP_EXPORT_PATH=/share/growatt-broker-x2.candidate.json
+```
+
+The `docker/run_broker.sh` helper mounts the source configuration read-only and
+the export directory read-write. After a bounded observation window, send
+`SIGUSR2` to the broker, review the candidate, and only then promote it to live
+mode. The example disables TCP and Shine writes during this process.
+
+The reviewed profile produced on 2026-09-26 is
+`configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json`. It contains
+twenty observed FC03, FC04, and FC20 blocks. The live RPi uses this profile with
+five-minute background refresh and predictive prefetch at the observed Shine
+cadence. Production TCP, development TCP, and Shine writes are enabled. The
+previous live and setup containers remain named rollback containers on the Pi.
+
 ## Build and run
 
 For the combined Shine profile:
