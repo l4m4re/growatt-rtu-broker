@@ -12,7 +12,7 @@
   "metadata": {
     "notes": [
       "The request set is learned on the RPi in setup mode with a deliberately empty poll plan.",
-      "Native Shine cadence was approximately 20 seconds; live background refresh is intentionally 300 seconds because predictive prefetch follows the native cadence without a 20-block background burst every minute.",
+      "Native Shine cadence was approximately 20 seconds. Predictive prefetch follows that cadence; the separate 300-second background refresh is only a fallback when Shine traffic is absent, avoiding a duplicate 20-block burst every minute.",
       "The observed FC03 192/1 request is covered by the configured FC03 180/20 block and is intentionally not polled separately.",
       "FC20 is represented as function 32, start 0, count 100 after observation.",
       "The Shine serial number is deliberately not part of the installation profile."

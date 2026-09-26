@@ -77,10 +77,12 @@ mode. The example disables TCP and Shine writes during this process.
 
 The reviewed profile produced on 2026-09-26 is
 `configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json`. It contains
-twenty observed FC03, FC04, and FC20 blocks. The live RPi uses this profile with
-five-minute background refresh and predictive prefetch at the observed Shine
-cadence. Production TCP, development TCP, and Shine writes are enabled. The
-previous live and setup containers remain named rollback containers on the Pi.
+twenty observed FC03, FC04, and FC20 blocks. Predictive prefetch follows the
+observed Shine cadence (approximately 20 seconds). The separate five-minute
+background refresh is a fallback for periods without Shine traffic; it is not
+the normal refresh cadence. Production TCP, development TCP, and Shine writes
+are enabled. The previous live and setup containers remain named rollback
+containers on the Pi.
 
 ## Build and run
 
