@@ -246,11 +246,11 @@ the Shine asked for a range that is already fresh.
 ## Shine absent/present behavior
 
 When absent, the physical poller uses the complete `poll_plan` from the
-selected installation configuration. There is no hidden inverter-family
-fallback plan: cache modes require an explicit configuration, and a setup run
-can export a reviewed candidate after observing the actual traffic. The
-configuration may include an opaque FC20 cadence, but it does not assign
-undocumented register meanings.
+selected installation configuration, including its observed native cadence.
+There is no hidden inverter-family fallback plan: cache modes require an
+explicit configuration, and a setup run can export a reviewed candidate after
+observing the actual traffic. The configuration may include an opaque FC20
+cadence, but it does not assign undocumented register meanings.
 
 When present, Shine requests are observed, cached, and used to refine order,
 cadence, and prefetch. The Shine receives synthesized responses from cache.

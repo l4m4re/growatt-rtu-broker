@@ -1333,6 +1333,7 @@ class CacheGatewayService:
         self.write_policy = write_policy or WritePolicy()
         self.setup_observer = setup_observer
         self.shine_pattern = ShinePatternObserver(jitter_tolerance=0.75)
+        self._last_shine_observed_at: float | None = None
         self._prefetched_due: dict[PatternKey, float] = {}
         self._lock = threading.Lock()
         self._inflight: dict[RegisterKey, _RefreshState] = {}
@@ -1380,6 +1381,7 @@ class CacheGatewayService:
             physical_key.count,
         )
         observed_at = time.monotonic() if at is None else at
+        self._last_shine_observed_at = observed_at
         self.shine_pattern.observe(pattern_key, at=observed_at)
         if self.setup_observer is not None:
             self.setup_observer.observe(physical_key, at=observed_at)
@@ -1394,6 +1396,21 @@ class CacheGatewayService:
             start=physical_key.start,
             count=physical_key.count,
             sequence_length=len(self.shine_pattern.history),
+        )
+
+    def _native_poll_cadence(self) -> float:
+        """Return the shortest configured native cadence for Shine liveness."""
+        intervals = [policy.interval for policy in self.policies]
+        if self._fc20_policy is not None:
+            intervals.append(self._fc20_policy.interval)
+        return min(intervals, default=self._FC20_INTERVAL)
+
+    def _shine_is_active(self, now: float) -> bool:
+        """Whether recent Shine traffic makes forced background reads redundant."""
+        if not self.predictive_prefetch or self._last_shine_observed_at is None:
+            return False
+        return now - self._last_shine_observed_at <= max(
+            2 * self._native_poll_cadence(), 30.0
         )
 
     def _register_policy(self, policy: CachePolicy) -> None:
@@ -1891,6 +1908,8 @@ class CacheGatewayService:
                 and key.start < policy.key.end
             ) or (key,)
         all_succeeded = True
+        successful_keys: list[RegisterKey] = []
+        failed_keys: list[RegisterKey] = []
         for readback_key in readback_keys:
             error: str | None = None
             try:
@@ -1905,6 +1924,7 @@ class CacheGatewayService:
             except PhysicalModbusException as exc:
                 error = str(exc)
             all_succeeded = all_succeeded and error is None
+            (successful_keys if error is None else failed_keys).append(readback_key)
             self._emit(
                 "write_readback",
                 role="INFO" if error is None else "WARN",
@@ -1920,7 +1940,41 @@ class CacheGatewayService:
                 error=error,
                 generation=self.cache.latest_generation,
             )
+        self._schedule_refresh_after_write(successful_keys, immediate=False)
+        self._schedule_refresh_after_write(failed_keys, immediate=True)
         return all_succeeded
+
+    def _schedule_refresh_after_write(
+        self, keys: Iterable[RegisterKey], *, immediate: bool
+    ) -> None:
+        """Re-arm affected configured blocks after write invalidation/readback."""
+        keys = tuple(keys)
+        if not keys:
+            return
+        now = time.monotonic()
+        scheduled: list[dict[str, object]] = []
+        with self._lock:
+            for key in keys:
+                policy = self._policy_by_key.get(key)
+                if policy is None:
+                    continue
+                due_at = now if immediate else now + policy.interval
+                self._next_due[key] = due_at
+                scheduled.append(
+                    {
+                        "function": key.function,
+                        "start": key.start,
+                        "count": key.count,
+                        "due_in_ms": round(max(0.0, due_at - now) * 1000, 3),
+                    }
+                )
+        if scheduled:
+            self._emit(
+                "cache_refresh_scheduled_after_write",
+                role="INFO" if not immediate else "WARN",
+                immediate=immediate,
+                blocks=scheduled,
+            )
 
     def _invalidate_before_write(
         self,
@@ -1942,6 +1996,7 @@ class CacheGatewayService:
             count=key.count,
             blocks=len(invalidated),
         )
+        self._schedule_refresh_after_write(invalidated, immediate=True)
         return invalidated
 
     @staticmethod
@@ -2472,6 +2527,7 @@ class CacheGatewayService:
         while not self._stop.is_set():
             now = time.monotonic()
             self._run_predictive_prefetch(now)
+            shine_active = self._shine_is_active(now)
             with self._lock:
                 due_policies = [
                     policy
@@ -2480,8 +2536,19 @@ class CacheGatewayService:
                 ]
             fc20_due = self._fc20_policy is not None and now >= self._fc20_next_due
             if fc20_due:
+                if shine_active:
+                    cached_fc20 = self.fc20_cache.get(
+                        self._FC20_REQUEST,
+                        now=now,
+                        max_age=self._fc20_max_age(),
+                    )
+                    if cached_fc20 is not None:
+                        self._fc20_next_due = time.monotonic() + (
+                            self._fc20_interval()
+                        )
+                        continue
                 with self._fc20_lock:
-                    response, error = self._refresh_fc20(
+                    _response, error = self._refresh_fc20(
                         client="PREFETCH", source="BACKGROUND", now=now
                     )
                 self._fc20_next_due = time.monotonic() + (
@@ -2499,7 +2566,7 @@ class CacheGatewayService:
                     client="PREFETCH",
                     source="BACKGROUND",
                     now=now,
-                    force_refresh=True,
+                    force_refresh=not shine_active,
                 )
                 if error is not None:
                     with self._lock:

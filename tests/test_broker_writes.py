@@ -80,6 +80,17 @@ def test_fc06_is_physically_written_and_read_back() -> None:
     assert len(downstream.requests) == 2
 
 
+def test_write_readback_rearms_affected_block_after_refresh() -> None:
+    downstream = WriteDownstream()
+    gateway = _gateway(downstream)
+    key = RegisterKey(3, 180, 20)
+    request = add_crc(bytes.fromhex("010600bc0001"))
+
+    gateway.handle_write_request(request, client="TCP:dev", source="DEV_TCP")
+
+    assert gateway._next_due[key] > time.monotonic()
+
+
 def test_write_invalidates_cache_before_physical_transaction() -> None:
     request = add_crc(bytes.fromhex("010600bc0001"))
 

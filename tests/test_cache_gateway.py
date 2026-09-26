@@ -636,3 +636,36 @@ def test_predictive_prefetch_refreshes_next_native_shine_block() -> None:
         )
         is not None
     )
+
+
+def test_background_fallback_considers_recent_shine_cadence_active() -> None:
+    gateway = _gateway(_FakeDownstream(), predictive_prefetch=True)
+    request = add_crc(bytes.fromhex("01040bb8007d"))
+
+    gateway.observe_shine_request(request, at=100.0)
+
+    assert gateway._shine_is_active(120.0)
+    assert not gateway._shine_is_active(131.0)
+
+
+def test_background_poll_reuses_recent_predictive_refresh() -> None:
+    gateway = _gateway(_FakeDownstream(), predictive_prefetch=True)
+    request = add_crc(bytes.fromhex("01040bb8007d"))
+    observed_at = time.monotonic()
+    gateway.observe_shine_request(request, at=observed_at)
+    policy = next(policy for policy in gateway.policies if policy.key.function == 4)
+    gateway._next_due = {item.key: observed_at + 1000 for item in gateway.policies}
+    gateway._next_due[policy.key] = 0.0
+    gateway._fc20_next_due = observed_at + 1000
+    calls: list[bool] = []
+
+    def fake_read_words(key: RegisterKey, **kwargs: object) -> tuple[None, None]:
+        assert key == policy.key
+        calls.append(bool(kwargs["force_refresh"]))
+        gateway.stop()
+        return None, None
+
+    gateway._read_words = fake_read_words  # type: ignore[method-assign]
+    gateway._run_poller()
+
+    assert calls == [False]

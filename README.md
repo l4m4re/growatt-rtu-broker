@@ -120,12 +120,13 @@ The learned live profile is recorded in
 It contains the twenty observed FC03/FC04/FC20 blocks for the current
 MIN 6000TL-XH firmware (`ALBA18010122`) and ShineWiLan-X2 firmware
 (`7.6.2.5`), with the FC03 `192/1` subset covered by the configured
-`180/20` block. Predictive prefetch follows the observed approximately
-twenty-second Shine sequence. The separate background refresh is deliberately
-conservative at five minutes and acts as a fallback when Shine traffic is
-absent; it does not set the normal Shine refresh cadence. The live RPi
-currently uses this profile with production TCP, development TCP, and Shine
-writes enabled.
+`180/20` block. The current X2 sequence repeats approximately every ten
+seconds per native block. Predictive prefetch follows that observed cadence,
+and the configured background intervals use the same cadence when Shine traffic
+is absent. While Shine is active, the background path reuses the predictive
+refreshes instead of issuing duplicate physical reads. The live RPi currently
+uses this profile with production TCP, development TCP, and Shine writes
+enabled.
 
 The helper can mount the configuration on the RPi and write the candidate to a
 separate host path:

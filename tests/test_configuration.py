@@ -35,6 +35,18 @@ def test_installation_config_round_trips_atomically(tmp_path: Path) -> None:
     assert json.loads(path.read_text(encoding="utf-8"))["schema"] == 1
 
 
+def test_current_x2_profile_uses_observed_cadence_for_background_fallback() -> None:
+    path = (
+        Path(__file__).parents[1]
+        / "configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json"
+    )
+
+    config = load_installation_config(path)
+
+    assert {block.interval_s for block in config.poll_plan} == {10.0}
+    assert {block.max_age_s for block in config.poll_plan} == {30.0}
+
+
 def test_setup_observer_exports_stable_unknown_block(tmp_path: Path) -> None:
     observer = SetupPlanObserver(_base_config())
     key = RegisterKey(3, 30000, 125)
