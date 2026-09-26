@@ -163,7 +163,8 @@ def _match_tx(candidate: Candidate, transactions: list[Tx]) -> tuple[str, Tx | N
     prior = [
         tx
         for tx in transactions
-        if tx.unit == unit and tx.function == candidate.function
+        if tx.unit == unit
+        and tx.function == candidate.function
         and (tx.expected_len is None or tx.expected_len == length)
     ]
     return ("late", prior[-1]) if prior else ("none", None)

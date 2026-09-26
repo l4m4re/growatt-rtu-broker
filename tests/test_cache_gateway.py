@@ -19,6 +19,19 @@ from growatt_broker.cache_gateway import (
     add_crc,
     min_6000tl_xh_discovery_profile,
 )
+from growatt_broker.configuration import load_installation_config
+
+
+OLD_POLICIES = load_installation_config(
+    __file__.replace(
+        "tests/test_cache_gateway.py",
+        "configs/examples/growatt-min6000tl-xh-shinewifi-x-old.json",
+    )
+).policies()
+
+
+def _gateway(downstream: object, **kwargs: object) -> CacheGatewayService:
+    return CacheGatewayService(downstream, policies=OLD_POLICIES, **kwargs)  # type: ignore[arg-type]
 
 
 def _coordinator(max_age: float = 5.0) -> tuple[RegisterCache, PollCoordinator]:
@@ -77,13 +90,28 @@ def test_unit_zero_discovery_accepts_physical_unit_one_response() -> None:
             calls.append((request, bool(kwargs["standard_modbus"])))
             return profile.response
 
-    gateway = CacheGatewayService(RecordingDownstream())
+    gateway = _gateway(RecordingDownstream())
 
     result = gateway.handle_shine_passthrough(profile.request)
 
     assert result.status == "served"
     assert result.response == profile.response
     assert calls == [(profile.request, False)]
+
+
+def test_virtual_shine_write_policy_can_be_disabled() -> None:
+    _, coordinator = _coordinator()
+    adapter = ShineVirtualInverterAdapter(
+        coordinator,
+        discovery_profiles=(),
+        allow_writes=False,
+    )
+    request = add_crc(bytes.fromhex("010600bc0001"))
+
+    result = adapter.handle_request(request, now=0.0)
+
+    assert result.status == "quarantined"
+    assert result.reason == "shine_write_disabled"
 
 
 def test_unrelated_unit_zero_request_is_not_answered_as_discovery() -> None:
@@ -379,7 +407,7 @@ def test_successful_shine_write_invalidates_overlapping_cache() -> None:
     downstream = _FakeDownstream()
     request = add_crc(bytes.fromhex("010600bc0001"))
     downstream.transact = lambda _request, **_kwargs: request  # type: ignore[method-assign]
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     gateway.cache.put_block(
         RegisterKey(3, 180, 20),
         range(20),
@@ -390,9 +418,7 @@ def test_successful_shine_write_invalidates_overlapping_cache() -> None:
     result = gateway.handle_shine_passthrough(request)
 
     assert result.status == "served"
-    assert gateway.cache.read(
-        RegisterKey(3, 180, 1), now=10.1, max_age=5.0
-    ) is None
+    assert gateway.cache.read(RegisterKey(3, 180, 1), now=10.1, max_age=5.0) is None
 
 
 def test_cache_gateway_is_explicitly_non_default() -> None:
@@ -417,7 +443,7 @@ class _FakeDownstream:
 
 def test_unplanned_shine_read_uses_cache_up_to_ten_seconds() -> None:
     downstream = _FakeDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     key = RegisterKey(3, 533, 1)
     gateway.cache.put_block(
         key,
@@ -442,7 +468,7 @@ def test_unplanned_shine_read_uses_cache_up_to_ten_seconds() -> None:
 
 def test_gateway_reads_from_one_native_block_and_replays_subsets() -> None:
     downstream = _FakeDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     first = add_crc(bytes.fromhex("01040bb80001"))
     second = add_crc(bytes.fromhex("01040bcc0001"))
 
@@ -464,7 +490,7 @@ def test_gateway_reads_from_one_native_block_and_replays_subsets() -> None:
 
 def test_cache_gateway_reads_do_not_require_a_shine_client() -> None:
     downstream = _FakeDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
 
     production = gateway.handle_standard_request(
         add_crc(bytes.fromhex("01040bb80001")),
@@ -479,19 +505,15 @@ def test_cache_gateway_reads_do_not_require_a_shine_client() -> None:
 
     assert production.status == "served"
     assert development.status == "served"
-    assert [request.hex() for request in downstream.requests] == [
-        "01040bb8007db22a"
-    ]
+    assert [request.hex() for request in downstream.requests] == ["01040bb8007db22a"]
 
 
 def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
     downstream = _FakeDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     request = add_crc(bytes.fromhex("01040c1d0020"))
 
-    result = gateway.handle_standard_request(
-        request, client="HA", source="PROD_TCP"
-    )
+    result = gateway.handle_standard_request(request, client="HA", source="PROD_TCP")
 
     assert result.status == "served"
     assert result.read is not None
@@ -501,9 +523,7 @@ def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
         bytes.fromhex("01040c35007d2375"),
     ]
 
-    repeated = gateway.handle_standard_request(
-        request, client="HA", source="PROD_TCP"
-    )
+    repeated = gateway.handle_standard_request(request, client="HA", source="PROD_TCP")
 
     assert repeated.status == "served"
     assert downstream.requests == [
@@ -514,7 +534,7 @@ def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
 
 def test_ha_uses_a_recent_shine_snapshot_before_refreshing() -> None:
     downstream = _FakeDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     key = RegisterKey(4, 3000, 125)
     gateway.cache.put_block(
         key,
@@ -547,7 +567,7 @@ def test_gateway_fc20_is_fetched_once_then_replayed() -> None:
         return response
 
     downstream.transact = transact  # type: ignore[method-assign]
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
 
     first = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=10.0)
     second = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=10.5)
@@ -562,7 +582,7 @@ def test_gateway_fc20_is_fetched_once_then_replayed() -> None:
 def test_fc20_timeout_is_reported_as_physical_passthrough_failure() -> None:
     downstream = _FakeDownstream()
     downstream.transact = lambda _request, **_kwargs: b""  # type: ignore[method-assign]
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     request = bytes.fromhex("01200000006481e6")
 
     result = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=10.0)
@@ -574,7 +594,7 @@ def test_fc20_timeout_is_reported_as_physical_passthrough_failure() -> None:
 
 def test_due_background_refresh_does_not_serve_the_old_fresh_entry() -> None:
     downstream = _FakeDownstream()
-    gateway = CacheGatewayService(downstream)
+    gateway = _gateway(downstream)
     key = RegisterKey(4, 3000, 125)
     gateway.cache.put_block(
         key,
@@ -599,7 +619,7 @@ def test_due_background_refresh_does_not_serve_the_old_fresh_entry() -> None:
 
 def test_predictive_prefetch_refreshes_next_native_shine_block() -> None:
     downstream = _FakeDownstream()
-    gateway = CacheGatewayService(downstream, predictive_prefetch=True)
+    gateway = _gateway(downstream, predictive_prefetch=True)
     request = add_crc(bytes.fromhex("01040bb8007d"))
 
     for at in (0.0, 10.0, 20.0):
@@ -608,8 +628,11 @@ def test_predictive_prefetch_refreshes_next_native_shine_block() -> None:
     gateway._run_predictive_prefetch(28.0)
 
     assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
-    assert gateway.cache.read(
-        RegisterKey(4, 3000, 125),
-        now=time.monotonic(),
-        max_age=5.0,
-    ) is not None
+    assert (
+        gateway.cache.read(
+            RegisterKey(4, 3000, 125),
+            now=time.monotonic(),
+            max_age=5.0,
+        )
+        is not None
+    )

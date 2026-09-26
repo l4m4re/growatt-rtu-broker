@@ -188,11 +188,15 @@ def _word_statistics(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "classification": (
                     "zero"
                     if all(value == 0 for value in values)
-                    else "constant"
-                    if len(set(values)) == 1
-                    else "changing_signed"
-                    if any(value >= 0x8000 for value in values)
-                    else "changing"
+                    else (
+                        "constant"
+                        if len(set(values)) == 1
+                        else (
+                            "changing_signed"
+                            if any(value >= 0x8000 for value in values)
+                            else "changing"
+                        )
+                    )
                 ),
             }
         )
@@ -489,9 +493,9 @@ def analyze(path: Path) -> dict[str, Any]:
             ),
             "frames": fc20_frames,
             "word_statistics": _word_statistics(fc20_frames) if fc20_frames else [],
-            "adjacent_32bit_candidates": _adjacent_candidates(fc20_frames)
-            if fc20_frames
-            else [],
+            "adjacent_32bit_candidates": (
+                _adjacent_candidates(fc20_frames) if fc20_frames else []
+            ),
             "standard_correlations": fc20_standard,
             "structure": {
                 "response_length_bytes": 205,

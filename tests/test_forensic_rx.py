@@ -10,9 +10,7 @@ from tools.analyze_forensic_rx import analyze
 
 def _tx(function: int, start: int, count: int) -> dict:
     raw = add_crc(
-        bytes([1, function])
-        + start.to_bytes(2, "big")
-        + count.to_bytes(2, "big")
+        bytes([1, function]) + start.to_bytes(2, "big") + count.to_bytes(2, "big")
     )
     return {"event": "physical_tx", "ts": "2026-09-06T00:00:00Z", "hex": raw.hex()}
 

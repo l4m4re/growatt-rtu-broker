@@ -13,6 +13,27 @@ fi
 
 DOCKER_ARGS=(--name growatt-broker --restart unless-stopped)
 
+# Optional installation configuration.  The host file is mounted read-only so
+# setup mode cannot silently replace the approved configuration.
+CONFIG_PATH="${CONFIG_PATH:-}"
+SETUP_EXPORT_PATH="${SETUP_EXPORT_PATH:-}"
+CONFIG_CONTAINER_PATH=/config/installation.json
+SETUP_EXPORT_CONTAINER_PATH=/config-out/candidate.json
+
+if [ -n "${CONFIG_PATH}" ]; then
+  if [ ! -f "${CONFIG_PATH}" ]; then
+    echo "Error: config file '${CONFIG_PATH}' does not exist"
+    exit 2
+  fi
+  DOCKER_ARGS+=(--mount "type=bind,src=${CONFIG_PATH},dst=${CONFIG_CONTAINER_PATH},readonly")
+fi
+
+if [ -n "${SETUP_EXPORT_PATH}" ]; then
+  SETUP_EXPORT_DIR=$(dirname "${SETUP_EXPORT_PATH}")
+  mkdir -p "${SETUP_EXPORT_DIR}"
+  DOCKER_ARGS+=(--mount "type=bind,src=${SETUP_EXPORT_DIR},dst=/config-out")
+fi
+
 # A mounted /dev is required when a USB adapter may disappear and re-enumerate
 # while this container stays alive. Use stable /dev/serial/by-id paths in .env.
 HOTPLUG_DEVICES="${HOTPLUG_DEVICES:-1}"
@@ -103,13 +124,29 @@ DOCKER_CMD=(docker run -d "${DOCKER_ARGS[@]}" growatt-rtu-broker:local \
     --baud "${INV_BAUD:-${BAUD:-115200}}" --bytes "${INV_BYTES:-${BYTES:-8N1}}" \
     --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
     --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" \
+    --fc20-timeout "${FC20_TIMEOUT:-3.0}" --shine-burst "${SHINE_BURST:-8}" \
+    --shine-policy "${SHINE_POLICY:-read-only}" \
     --prod-tcp-writes "${PROD_TCP_WRITES:-enabled}" \
     --dev-tcp-writes "${DEV_TCP_WRITES:-enabled}" \
     --log "${LOG_PATH:--}" \
     --mode "${BROKER_MODE}")
 
+if [ -n "${CONFIG_PATH}" ]; then
+  DOCKER_CMD+=(--config "${CONFIG_CONTAINER_PATH}")
+fi
+
+if [ -n "${OPERATION_MODE:-}" ]; then
+  DOCKER_CMD+=(--operation-mode "${OPERATION_MODE}")
+fi
+
+if [ -n "${SETUP_EXPORT_PATH}" ]; then
+  DOCKER_CMD+=(--setup-export "${SETUP_EXPORT_CONTAINER_PATH}")
+fi
+
 if [ "${SHINE_CONFIGURED}" -eq 1 ]; then
-  DOCKER_CMD+=(--shine "${SHINE_ARG}")
+  DOCKER_CMD+=(--shine "${SHINE_ARG}" \
+    --shine-baud "${SHINE_BAUD:-${BAUD:-115200}}" \
+    --shine-bytes "${SHINE_BYTES:-${BYTES:-8N1}}")
 fi
 
 echo "Prepared docker run command:"

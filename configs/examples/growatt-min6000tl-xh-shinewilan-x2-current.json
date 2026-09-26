@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "name": "Growatt MIN 6000TL-XH + ShineWiLan-X2 (current firmware)",
+  "source": "live-observed-candidate-2026-09-26",
+  "mode": "cache+shine-predictive",
+  "operation_mode": "setup",
+  "inverter": {
+    "vendor": "Growatt",
+    "model": "MIN 6000TL-XH",
+    "firmware": "ALBA18010122"
+  },
+  "logger": {
+    "vendor": "Growatt",
+    "model": "ShineWiLan-X2",
+    "firmware": "7.6.2.5"
+  },
+  "write_policy": {
+    "prod_tcp": "disabled",
+    "dev_tcp": "disabled",
+    "shine": "read-only"
+  },
+  "transport": {
+    "inverter": {
+      "device": "/dev/serial/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.4:1.0-port0",
+      "baud": 115200,
+      "bytes": "8N1"
+    },
+    "logger": {
+      "device": "/dev/serial/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.3:1.0-port0",
+      "baud": 115200,
+      "bytes": "8N1"
+    }
+  },
+  "poll_plan": [],
+  "metadata": {
+    "notes": [
+      "The request set is learned on the RPi in setup mode with a deliberately empty poll plan.",
+      "FC20 is represented as function 32, start 0, count 100 after observation.",
+      "The Shine serial number is deliberately not part of the installation profile."
+    ]
+  }
+}

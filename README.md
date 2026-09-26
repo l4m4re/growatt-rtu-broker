@@ -1,200 +1,243 @@
-# Modbus Workbench (formerly Growatt RTU Broker)
+# Growatt Pi in the Middle (PiITM)
 
-Modbus Workbench is a modular toolkit for bridging, monitoring, and simulating Modbus RTU/TCP networks. It began as a
-purpose-built ShineWiFi/HA broker for Growatt inverters and is evolving into a general-purpose Modbus workbench that serves
-both live deployments and lab/testing workflows. The immediate milestone is to let Home Assistant and a ShineWiFi dongle
-share one inverter while recording and annotating traffic so we can discover undocumented registers safely.
+PiITM is a small Raspberry Pi service that owns one Growatt inverter's
+physical RS-485 connection. It gives Home Assistant, a Shine data logger, and
+development tools controlled access to the same inverter while preserving
+Modbus pacing, framing, and evidence. The project is independent of Home
+Assistant and of the Growatt register authority.
 
-> **Packaging note:** The Python package and CLI are still published as `growatt_broker` / `growatt-broker`. They will be
-> renamed once the code base is fully aligned with the Modbus Workbench architecture.
+The public package and command are still named `growatt-rtu-broker` and
+`growatt-broker`. The PiITM name describes the deployed role.
 
-## Project vision
+## What is implemented
 
-* Provide a transport-agnostic gateway that multiplexes serial and TCP clients without violating Modbus timing rules.
-* Capture, annotate, and replay Modbus frames so undocumented registers can be investigated offline.
-* Offer a programmable simulation environment for integration testing, QA scripts, and education.
+- one physical RTU owner with queued sources;
+- Modbus TCP listeners for production and development clients;
+- optional shared FC03/FC04 register-block cache;
+- optional virtual or direct Shine path;
+- bounded raw-transparent serial bridge for forensic captures;
+- structured JSONL traffic and forensic logs;
+- a dataset-backed simulator and analysis tools;
+- FC06/FC10 write invalidation and complete-block readback in cache mode.
 
-## Key scenarios and capabilities
+The cache is a register-block cache. It is not a duplicate TCP response cache.
+A successful write is reported only after the affected block has been read back
+through the same paced physical path. Register names, scaling, access flags,
+and inverter-family semantics belong in
+[Growatt inverter info](https://github.com/l4m4re/growatt-inverter-info) or
+[Growatt_ModbusTCP](https://github.com/l4m4re/Growatt_ModbusTCP).
 
-- **ShineWiFi ↔ Home Assistant brokering** – Primary live use case: interpose between ShineWiFi-X and HA so both can talk to
-  the same inverter while respecting pacing and CRC validation.
-- **Bus sniffing & register discovery** – Mirror RS-485 traffic, decode frames, and enrich them with metadata so we can spot
-  undocumented registers and units during live sessions.
-- **Device scanning & dataset capture** – Poll register ranges or ingest sniffed data to build datasets that seed the simulator
-  or document register maps.
-- **Record / playback pipelines** – Store timestamped captures and replay them in real or accelerated time for unit tests,
-  regression suites, or demos.
-- **Scenario & state modelling** – Script register evolution (e.g., charge cycles or temperature ramps) or plug in simple
-  state machines to mimic plant behaviour.
-- **Scriptable QA interface** – Generate a typed API from device descriptions so automated tests can call helpers like
-  `set("temperature", 50)` or `assert growatt("SoC") == 40`.
-- **Serial ↔ TCP gatewaying** – Provide RTU-to-TCP bridges and virtual serial ports so mixed toolchains can coexist on one bus.
-- **Fault-injection & resilience testing** *(new)* – Delay frames, drop packets, or corrupt CRCs on demand to validate client
-  retry logic and stress error handling.
-- **Education & interactive labs** *(new)* – Use datasets and scenarios to teach Modbus concepts or to onboard new
-  maintainers without touching production hardware.
+## Runtime modes
 
-## Architecture building blocks
+| Mode | Use |
+| --- | --- |
+| `legacy` | Physical inverter path, with optional direct Shine forwarding. |
+| `cache` | Physical inverter owner and shared native FC03/FC04 cache. |
+| `cache+shine` | Shared cache with a virtual Shine client path. |
+| `cache+shine-direct` | Shared scheduler with direct Shine forwarding. |
+| `cache+shine-predictive` | Shared cache plus observed Shine cadence and prefetch. |
+| `legacy --shine-policy raw-transparent` | Temporary byte-for-byte forensic bridge. It disables both TCP listeners and must be the only owner of both serial ports. |
 
-1. **Transport connectors** – pluggable drivers for physical serial ports (RS-485 USB), virtual pseudo-terminals, and TCP/UDP
-   sockets. Each connector enforces pacing, retries, and framing.
-2. **Device & register modelling** – declarative descriptions of units, register blocks, scaling, and engineering units that
-   power both the simulator datasets and sniffed-frame annotations.
-3. **Data plane services** – the asynchronous backend interface (`growatt_broker/backend.py`) that powers live serial access,
-   dataset replay, and capture wrappers while keeping higher-level servers agnostic.
-4. **Simulation & scenario engine** – dataset-backed simulator with mutators today, extended toward programmable scenarios,
-   accelerated playback, and record/replay bundles.
-5. **Tooling surfaces** – the CLI (`growatt-broker`), Python API, Docker image, and devcontainer helpers that expose the
-   toolkit to Home Assistant, QA suites, or standalone Modbus users.
+On the 2026-09-25 reference Pi, the normal X2 profile used 115200 8N1 on
+both ports, a 0.5 second minimum transaction period, an 8 second RTU
+timeout, a 6 second FC20 timeout, and an eight-transaction Shine burst. These
+values are deployment evidence, not universal device requirements.
 
-A deeper breakdown of components and responsibilities lives in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+The ShineWiLan-X2 and inverter adapters are both CH340-class devices without
+unique USB serial numbers. Select them with stable `/dev/serial/by-path`
+aliases. Do not use `ttyUSB0` or `ttyUSB1` in a deployment guide.
 
-## Implementation roadmap (high-level)
+## Install and local checks
 
-### Phase 0 – Prototype foundation (underway)
-- Keep the existing dataset backend, capture backend skeleton, and Modbus TCP server running for regression parity.
-- Document current behaviours and tighten automated tests around the simulator utilities.
-
-### Phase 1 – ShineWiFi/HA interposer & sniffer (current goal)
-- Merge the CLI and async backend so the production gateway, dataset runner, and capture mode share the same code path.
-- Add dual-port brokering (Shine serial + HA TCP) with pacing controls, fault-tolerant reconnects, and structured JSONL logs.
-- Implement a live sniff mode that can annotate frames with register metadata and write compact capture bundles for analysis.
-- Ship minimal tooling to compact captures into datasets and surface diff reports for newly observed registers.
-- Provide setup, troubleshooting, and security guidance tailored to Home Assistant deployments.
-
-### Phase 2 – Bus insight & dataset generation
-- Build active scanners that walk configured register maps and detect deltas, units, and plausible scaling.
-- Layer richer metadata onto capture files (engineering units, device type hints) and expose search/visualisation helpers.
-- Support record-and-replay bundles with adjustable time compression for automated testing.
-
-### Phase 3 – Scenario-driven simulation
-- Introduce a scenario engine that drives mutators/state machines, enabling scripted charge cycles or thermal models.
-- Allow composite virtual devices on one bus (multiple unit IDs) driven by shared scenarios.
-- Expose APIs for QA scripts and CI runs to manipulate scenarios programmatically.
-
-### Phase 4 – Automation & ecosystem
-- Finalise virtual serial fan-out, RTU↔TCP bridging profiles, and optional MQTT/REST telemetry exporters.
-- Publish reusable libraries (CRC/frame helpers, backend ABC) and package the toolkit for broader Modbus audiences.
-- Harden deployment artifacts (Home Assistant add-on, Docker images, systemd units) and document upgrade paths.
-
-## Repository layout & documentation
-
-- `docs/ROADMAP.md` – detailed architecture notes and phased implementation plan.
-- `growatt_broker/` – current Python package containing CLI, backend abstractions, simulator, and broker prototype.
-- `tests/` – pytest suite covering simulator datasets, CRC helpers, and CLI basics.
-- `tools/` – capture, dataset, probe and simulator mutation helpers.
-- `scripts/` & `Dockerfile` – helper assets for running inside Home Assistant OS or containers.
-
-See [`docs/SIMULATOR.md`](docs/SIMULATOR.md) for the simulator and dataset
-workflow. These tools are intentionally kept with the broker rather than in
-the Home Assistant integration repository.
-
-## Quick start (editable install)
-
-From the parent repo root (after initialising submodules):
+From this repository:
 
 ```bash
-pip install -e external/growatt-rtu-broker
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev,test]'
+.venv/bin/ruff check .
+.venv/bin/black --check .
+.venv/bin/python -m pytest -q
 ```
 
-## Dataset JSON shape
+The test suite is standalone; it does not require the Home Assistant pytest
+plugins. CI runs the same checks on Python 3.11 and 3.14 and builds the Docker
+image.
 
-```jsonc
-{
-  "holding": {"30": 100, "31": 0},
-  "input":  {"0": 401},
-  "_source": "scan provenance optional"
-}
-```
-
-## Usage examples
-
-Run with a static dataset for 10 seconds:
+The installed `growatt-broker` command is the live broker. The older
+dataset-demo CLI remains available as a library module for simulator tests:
 
 ```bash
-growatt-broker run --mode dataset --dataset datasets/min_6000xh_tl.json --duration 10
+python -m growatt_broker.cli run --mode dataset \
+  --dataset growatt_broker/simulator/holding_tl_xh.json --duration 5
 ```
 
-Capture all operations:
+Use `growatt-broker --help` for the live command's complete option list.
+
+## Installation configurations and setup mode
+
+An installation configuration is one reviewable JSON file containing the
+inverter/logger identification, serial settings, and complete native poll
+plan. Example configurations are in
+[`configs/examples/`](configs/examples/). The old ShineWiFi-X and current
+ShineWiLan-X2 examples deliberately omit device serial numbers. The X2
+candidate is write-disabled/read-only while it is in setup mode; the old
+reviewed profile demonstrates the explicit enabled/transparent settings.
+
+The same file controls write policy for the production TCP listener, the
+development TCP listener, and Shine. Use `"disabled"` for either TCP value,
+or `"read-only"` for Shine, when setup or a canary must not forward writes.
+The older Docker environment variables (`PROD_TCP_WRITES`,
+`DEV_TCP_WRITES`, and `SHINE_POLICY`) remain command-line overrides for
+deployments that have not migrated to an installation file.
+
+Live mode uses the approved plan without changing it:
 
 ```bash
-growatt-broker capture --mode dataset --dataset datasets/min_6000xh_tl.json --out session.jsonl --duration 5
+growatt-broker --config /share/growatt-broker/installation.json
 ```
 
-Enable simple mutation (auto-increment some values):
-
-```bash
-growatt-broker run --mode dataset --dataset datasets/min_6000xh_tl.json --mutate
-```
-
-Run the production gateway against hardware:
+Setup mode observes Shine and TCP reads, adds stable unknown register blocks
+to the in-memory cache plan, and keeps the original configuration unchanged.
+The X2 example intentionally starts with an empty `poll_plan`; FC03, FC04,
+and FC20 blocks are learned from the actual Shine traffic. Send `SIGUSR2` to
+export the candidate configuration:
 
 ```bash
 growatt-broker \
-  --inverter /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 \
-  --baud 115200 --bytes 8N1 \
-  --tcp 0.0.0.0:5020 \
-  --min-period 1.0 --rtimeout 1.5
+  --config /share/growatt-broker/installation.json \
+  --operation-mode setup \
+  --setup-export /share/growatt-broker/installation.candidate.json
+kill -USR2 <broker-pid>
 ```
 
-This is the no-Shine legacy path. Add `--shine
-/dev/serial/by-id/usb-04e2_1410-if00-port0` only for a mode that explicitly
-uses the physical Shine link (`cache+shine`, `cache+shine-direct`, or
-`cache+shine-predictive`). Use stable `/dev/serial/by-id` paths rather than
-`ttyUSB` numbers.
+Only a reviewed candidate should be promoted to live mode. Setup mode does
+not initiate background writes and does not replace the configured profile
+automatically. Client-originated writes remain controlled by the configured
+`write_policy` (set it to disabled/read-only for a write-free observation run).
 
-See [`docker-compose.yml`](docker-compose.yml) for the containerised equivalent.
+The learned live profile is recorded in
+[`configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json`](configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json).
+It contains the twenty observed FC03/FC04/FC20 blocks for the current
+MIN 6000TL-XH firmware (`ALBA18010122`) and ShineWiLan-X2 firmware
+(`7.6.2.5`), with the FC03 `192/1` subset covered by the configured
+`180/20` block. Its background refresh is deliberately conservative at five
+minutes; predictive prefetch follows the observed approximately twenty-second
+Shine sequence. The live RPi currently uses this profile with production TCP,
+development TCP, and Shine writes enabled.
 
-## Capture file example (JSONL)
+The helper can mount the configuration on the RPi and write the candidate to a
+separate host path:
 
-```json
-{"ts": 1736868000.123, "op": "read_input", "unit": 1, "addr": 0,  "count": 4, "regs": [401,401,0,457]}
-{"ts": 1736868001.125, "op": "read_holding", "unit": 1, "addr": 30, "count": 2, "regs": [100,0]}
+```bash
+CONFIG_PATH=/share/growatt-rtu-broker/configs/examples/growatt-min6000tl-xh-shinewilan-x2-current.json \
+OPERATION_MODE=setup \
+SETUP_EXPORT_PATH=/share/growatt-broker-x2.candidate.json \
+docker/run_broker.sh
 ```
 
-## Deployment on Home Assistant OS
+Review the exported file before changing `OPERATION_MODE` to `live`.
 
-1. Copy this directory to `/mnt/data/supervisor/homeassistant/growatt-rtu-broker` using the Advanced SSH add-on.
-2. Populate an `.env` file next to `docker-compose.yml` to describe your hardware and network bindings:
-   ```ini
-   INV_DEV=/dev/serial/by-path/<inverter-port>
-   SHINE_DEV=/dev/serial/by-id/usb-04e2_1410-if00-port0  # optional unless using cache+shine*
-   BAUD=115200
-   BYTES=8N1
-   TCP_BIND=0.0.0.0:5020      # Home Assistant / primary Modbus TCP
-   TCP_ALT_BIND=0.0.0.0:5021  # Laptop / devcontainer access
-   SNIFF_BIND=0.0.0.0:5700    # Read-only JSONL sniff stream
-   MIN_PERIOD=1.0
-   RTIMEOUT=1.5
-   PROD_TCP_WRITES=enabled   # forward all well-formed FC06/FC10 requests
-   DEV_TCP_WRITES=enabled    # forward all well-formed FC06/FC10 requests
-   LOG_PATH=-                 # Disable on-disk logs for production HA
-   HOTPLUG_DEVICES=1          # Follow USB serial re-enumeration in the container
-   BROKER_MODE=legacy         # Keep the known-good path unless a canary is approved
-   ```
-3. Run `docker compose up -d`.
+## Local simulator
 
-With this configuration the broker speaks 115200 baud, 8N1 on the Pi-visible
-inverter and optional Shine serial links, serves Modbus TCP
-for Home Assistant on port `5020`, exposes a second TCP listener on `5021` for ad-hoc tools, and mirrors every frame as a JSONL
-stream on port `5700` for remote sniffing. Logs are suppressed on disk (`LOG_PATH=-`) but still available live through the
-sniff stream. All ports are bound on the host IP because the compose file uses `network_mode: host`. See
-[`docs/ha_live_setup.md`](docs/ha_live_setup.md) for a more detailed walk-through.
+The simulator serves a small deterministic register dataset over a pseudo
+serial link for tests and experiments:
 
-The broker reopens the inverter's stable udev alias after repeated time-outs
-and clears stale serial/framer buffers. Docker deployments must expose the
-host `/dev` tree (as `HOTPLUG_DEVICES=1`) for a re-enumerated tty to be visible
-inside the container.
+```bash
+python -m growatt_broker.simulator.modbus_simulator --help
+```
 
-## Limitations
+See [docs/SIMULATOR.md](docs/SIMULATOR.md). The simulator is a PiITM test
+fixture; it is not a Home Assistant runtime dependency.
 
-- CLI demo and production gateway still share legacy code; the unified backend refactor is tracked in the roadmap above.
-- Virtual serial fan-out and advanced sniffing are planned but not yet implemented.
-- Error handling and unit coverage remain prototype-level; expect rough edges while the new architecture is assembled.
+## Hardware deployment
 
-## Contributing
+Copy `.env.example` to `.env` and replace the device aliases with the aliases
+on the target Pi:
 
-Keep broker/workbench concerns separate from Home Assistant integration code. Small, focused PRs (one feature at a time) are
-encouraged—see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the broader plan.
+```ini
+INV_DEV=/dev/serial/by-path/<inverter-port>
+SHINE_DEV=/dev/serial/by-path/<shine-x2-port>
+BROKER_MODE=cache+shine-predictive
+INV_BAUD=115200
+INV_BYTES=8N1
+SHINE_BAUD=115200
+SHINE_BYTES=8N1
+MIN_PERIOD=0.5
+RTIMEOUT=8.0
+FC20_TIMEOUT=6.0
+SHINE_BURST=8
+TCP_BIND=0.0.0.0:5020
+TCP_ALT_BIND=0.0.0.0:5021
+SNIFF_BIND=0.0.0.0:5700
+PROD_TCP_WRITES=enabled
+DEV_TCP_WRITES=enabled
+LOG_PATH=-
+HOTPLUG_DEVICES=1
+```
 
-MIT Licensed.
+For the combined Shine profile:
+
+```bash
+docker compose up -d --build
+```
+
+`docker-compose.yml` requires `SHINE_DEV`. For a no-Shine `legacy` or `cache`
+deployment use `docker/run_broker.sh` or invoke the installed command
+directly. The helper mounts the host `/dev` tree when `HOTPLUG_DEVICES=1`, so
+a USB re-enumeration can be recovered without recreating the container.
+
+The production listener is normally port 5020. Port 5021 is for development
+tools and port 5700 streams JSONL sniff events. Bind these ports to the LAN
+only when that is acceptable; the protocol has no built-in authentication or
+encryption.
+
+See [docs/ha_live_setup.md](docs/ha_live_setup.md) for deployment and
+rollback. The normal rollback is to stop the new container and start the
+previously tagged image with the previous command and device aliases.
+
+## Forensic captures
+
+Use [docs/SHINE_FIRMWARE_FORENSICS.md](docs/SHINE_FIRMWARE_FORENSICS.md) for
+the raw-transparent profile. It is a bounded diagnostic mode, not a normal
+broker mode:
+
+```bash
+mkdir -p captures
+INV_DEV=/dev/serial/by-path/<inverter-port> \
+SHINE_DEV=/dev/serial/by-path/<shine-x2-port> \
+docker compose -f docker-compose.forensic.yml run --rm forensic
+```
+
+The profile has no Modbus TCP endpoint and must not run concurrently with the
+normal broker. Store captures outside the repository unless a small,
+sanitisable, reproducible sample is needed for a test. Never commit
+credentials, private network addresses, or unbounded live logs.
+
+## Evidence and protocol boundaries
+
+[docs/PIITM_PROTOCOL_AND_EVIDENCE.md](docs/PIITM_PROTOCOL_AND_EVIDENCE.md) and the
+[2026-09-25 live acceptance record](docs/PIITM_LIVE_ACCEPTANCE_20260925.md)
+index compact samples and the evidence labels used by this project:
+`PROVEN_LIVE`, `REPLAYED`, `STATIC_ANALYSIS`, `VENDOR_REFERENCE`,
+`HYPOTHESIS`, and `NOT_TESTED`. The historical HA-DEV reports are retained
+under [docs/archive](docs/archive) and are not current deployment
+instructions.
+
+The PiITM project proves transport and ownership behaviour. It does not claim
+that FC20, VPP registers, discovery words, or H188 have universal semantics.
+Those claims require device-specific evidence and belong with the register
+authority.
+
+## Development
+
+Keep PiITM transport, capture, simulator, and deployment work in this
+repository. Keep Home Assistant entities and automations in their integration
+repository. Keep register definitions and device-specific interpretation in
+the Growatt information repositories. Small reviewable changes are preferred;
+include the command and evidence location for any live hardware test.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the release plan,
+[GROWATT_MODBUS_TCP_HANDOFF.md](docs/GROWATT_MODBUS_TCP_HANDOFF.md) for the
+protocol handoff, and [AGENTS.md](AGENTS.md) for repository working rules.
+
+MIT licensed.

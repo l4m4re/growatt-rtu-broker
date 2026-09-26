@@ -1,8 +1,9 @@
 # HA-DEV-3A cache-centric Growatt broker architecture
 
-Status: opt-in implementation; production remains on the legacy default. The
-consolidated review and current live baseline are recorded in
-[`HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md`](HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md).
+Status: implemented opt-in architecture. The 2026-09-25 live reference uses
+`cache+shine-predictive`; `legacy` remains the documented rollback profile.
+The historical consolidated review and current live baseline are recorded in
+[`HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md`](archive/HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md).
 
 ## Decision
 
@@ -14,9 +15,9 @@ discovery request is terminated locally for a validated device profile, and
 normal reads are answered from the same register cache used by HA.
 
 The cache implementation is enabled only with `--mode cache`, `--mode cache+shine`,
-`--mode cache+shine-direct`, or `--mode cache+shine-predictive`. The default remains `--mode legacy`, so no
-production
-mode changes merely by upgrading the image.
+`--mode cache+shine-direct`, or `--mode cache+shine-predictive`. The default
+remains `--mode legacy`, so upgrading the image does not silently change an
+explicit legacy deployment.
 
 ## Evidence from HA-DEV-2C/2D/2E
 
@@ -102,18 +103,43 @@ range crossing blocks is composed only when every piece is fresh and all
 pieces share the same `snapshot_id`; otherwise a refresh is required. This
 prevents silently combining unrelated generations.
 
-The live implementation polls the validated native MIN/TL-XH blocks as
-background work and serves contained TCP or virtual-Shine reads by slicing
-those snapshots. The current plan is exposed by
-`native_min_6000tl_xh_plan()`; it intentionally does not turn unused words
-into entities or issue one physical transaction per entity.
+## TCP read path
+
+The register cache is the only cache used to answer standard Modbus reads in
+cache mode. The TCP server does not keep a second response cache and does not
+deduplicate requests by transaction ID. For each read it therefore follows
+one of two paths:
+
+1. a fresh value is contained in the register cache and the response is built
+   immediately from that snapshot; or
+2. the value is absent or stale, so the gateway schedules a physical read of
+   the complete native block (or all native blocks needed for a crossing
+   range), updates the register cache, and only then returns the response.
+
+An exact TCP retry is safe on the second path because the first completed
+refresh has already populated the shared register cache. The retry becomes a
+normal cache hit. Requests that arrive concurrently while a refresh is in
+flight are coalesced by the gateway rather than by a TCP response cache.
+
+Writes follow the same ownership rule. The overlapping snapshots are marked
+dirty before the physical FC06/FC10 transaction. Reads wait while the write
+and its read-after-write are in progress. After a successful write the broker
+refreshes the complete affected native block before serving reads again. If
+that readback fails, the affected block remains unavailable instead of
+serving the old value.
+
+The live implementation polls the validated native blocks from the selected
+installation configuration and serves contained TCP or virtual-Shine reads
+by slicing those snapshots. A configuration is explicit about complete native
+blocks; the broker does not carry a hidden inverter-family poll plan or turn
+unused words into entities.
 
 The cache mode can be exercised with:
 
 ```text
 --mode cache
---mode cache+shine --shine /dev/serial/by-id/<shine-port>
---mode cache+shine-direct --shine /dev/serial/by-id/<shine-port>
+--mode cache+shine --shine /dev/serial/by-path/<shine-port>
+--mode cache+shine-direct --shine /dev/serial/by-path/<shine-port>
 ```
 
 `cache+shine` recognizes the validated unit-0 discovery request but forwards it
@@ -219,9 +245,12 @@ the Shine asked for a range that is already fresh.
 
 ## Shine absent/present behavior
 
-When absent, the physical poller uses a conservative Shine-like profile built
-from evidence: the native FC04 pages, observed FC03 pages, and an explicitly
-scheduled FC20 primitive. It does not blindly replay undocumented writes.
+When absent, the physical poller uses the complete `poll_plan` from the
+selected installation configuration. There is no hidden inverter-family
+fallback plan: cache modes require an explicit configuration, and a setup run
+can export a reviewed candidate after observing the actual traffic. The
+configuration may include an opaque FC20 cadence, but it does not assign
+undocumented register meanings.
 
 When present, Shine requests are observed, cached, and used to refine order,
 cadence, and prefetch. The Shine receives synthesized responses from cache.
@@ -261,9 +290,11 @@ path with:
 - origin, lease/arm state, and audit logging.
 
 Shine-originated writes are classified independently as known housekeeping,
-configuration, or unknown. The prototype quarantines FC06/FC10 by default and
-does not decide that H188 should be forwarded. Unknown functions are also
-quarantined. No write policy was enabled live.
+configuration, or unknown. The installation configuration controls whether
+FC06/FC10 writes are forwarded for each TCP source and for Shine. A
+`read-only` Shine policy quarantines FC06/FC10; `transparent` is an explicit
+installation or test choice. Unknown functions remain quarantined, and this
+transport project does not decide that H188 should be forwarded.
 
 ## Failure semantics
 
@@ -304,30 +335,26 @@ The prototype files are:
 - `growatt_broker/cache_gateway.py`
 - `tests/test_cache_gateway.py`
 
-The focused suite contains 15 tests covering discovery scoping, fresh-cache
-serving, overlap, stale refresh, duplicate coalescing, failure state,
-generation coherence, state transitions, jitter/fallback prediction, opaque
-FC20, write quarantine, and non-default behavior.
+The test suite covers discovery scoping, fresh-cache serving, overlap, stale
+refresh, duplicate coalescing, failure state, generation coherence, state
+transitions, jitter/fallback prediction, opaque FC20, write policy, setup-mode
+configuration learning, and simulator behavior. Run the standalone checks
+from this repository with the pinned virtual environment:
 
-Existing non-simulator broker tests passed: 62 passed. The complete suite had
-9 failures in pre-existing simulator tests because the installed PyModbus
-version rejects the simulator's zero-based `SimData(address=-1)` setup. Those
-failures occur before any cache-gateway behavior and are unchanged by this
-task.
+```text
+./.venv/bin/python -m pytest -q
+./.venv/bin/ruff check .
+./.venv/bin/black --check .
+```
 
 ## Staged migration
 
-1. Preserve the known-good no-Shine production broker.
-2. Expand offline cache/coalescer tests and async completion interfaces.
-3. Implement a sole-owner physical poller serving HA from native blocks, with
-   no Shine connection.
-4. Add virtual Shine discovery and read-only FC03/FC04 cache responses.
-5. Add opaque FC20 physical polling and replay after isolated validation.
-6. Add adaptive Shine cadence synchronization and freshness classes.
-7. Review and implement explicit Shine housekeeping/write policy.
-8. Run a bounded combined canary with rollback and persistent evidence.
-
-No production migration is part of HA-DEV-3A.
+The cache gateway, virtual Shine path, opaque FC20 transport, cadence
+observation, explicit installation plans, and source-specific write policy are
+implemented. Remaining work is operational: review setup candidates, run a
+bounded canary for each logger/inverter firmware combination, and preserve a
+rollback image and evidence for every live change. No candidate is promoted
+automatically.
 
 ## Open questions
 

@@ -162,7 +162,6 @@ class LengthStats:
                 )
 
 
-
 @dataclass
 class FuncRoleStats:
     func: Optional[int]
@@ -273,7 +272,9 @@ def emit_report(
     for key in sorted(stats.keys()):
         func, role = key
         entry = stats[key]
-        func_label = "?" if func is None else f"0x{func:02X}" if func >= 0 else str(func)
+        func_label = (
+            "?" if func is None else f"0x{func:02X}" if func >= 0 else str(func)
+        )
         print("=== Function", func_label, f"role={role or '-'} ===")
         print(
             f"Total frames: {entry.count}  distinct payloads: {len(entry.payload_counter)}  "
@@ -303,13 +304,17 @@ def emit_report(
 
             print("    Byte detail:")
             emitted = False
-            for line in length_stats.describe_bytes(show_constant=show_constant, top=top_values):
+            for line in length_stats.describe_bytes(
+                show_constant=show_constant, top=top_values
+            ):
                 print(line)
                 emitted = True
             if not emitted:
                 print("      (all bytes constant; use --show-constant to list)")
 
-            for line in length_stats.describe_words(show_constant=show_constant, top=top_values):
+            for line in length_stats.describe_words(
+                show_constant=show_constant, top=top_values
+            ):
                 print(line)
 
             if length_stats.examples:

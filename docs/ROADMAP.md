@@ -1,208 +1,133 @@
-# Modbus Workbench – design & implementation roadmap
+# PiITM roadmap
 
-Modbus Workbench evolves the original Growatt RTU Broker into a full-featured Modbus toolkit for live operations,
-monitoring, and testing. This document captures the architecture direction and the staged delivery plan that will guide
-implementation.
+PiITM is the Growatt Pi in the Middle: a Raspberry Pi service that owns one
+physical inverter RS-485 connection and safely shares it between Home
+Assistant, Shine, development clients, and bounded forensic tools.
 
-**Status snapshot:** 2026-09-20
+The repository is a transport, observability, simulator, and deployment
+project. It is not the Home Assistant integration and it is not the authority
+for register names or inverter semantics.
 
-## Open live-operation issue: write-through cache coherence
+## Current status — 2026-09-26
 
-The DEV Growatt TL-XH HIL test confirmed that the broker acknowledges FC10
-writes, but a subsequent read can still return the old value from the cached
-register block until the normal cache refresh. The Home Assistant integration
-currently waits 11 seconds before forcing a readback; this is a temporary
-workaround and must not become part of the device integration contract.
+### Implemented
 
-The broker should own this invariant for every mutating register operation:
+- one queued physical RTU owner for all client sources;
+- legacy, cache, cache-plus-Shine, and raw-transparent runtime profiles;
+- Modbus TCP production/development listeners and JSONL sniff output;
+- CRC/framing validation, response association, and Modbus exception
+  propagation;
+- native FC03/FC04 block cache with explicit freshness;
+- FC06/FC10 cache invalidation plus complete-block read-after-write before a
+  coherent write result is returned;
+- Shine cadence observation and predictive native-block prefetch in the
+  opt-in predictive profile;
+- explicit installation JSON configurations for the poll plan, transport,
+  inverter, and logger combination;
+- live mode with an approved installation plan and setup mode that observes
+  Shine/TCP traffic, adapts the in-memory plan, and exports a candidate;
+- standalone package installation, simulator fixtures, tests, Black/Ruff
+  checks, and CI workflow;
+- bounded ShineWiLan-X2 raw bridge evidence on the live Raspberry Pi;
+- a read-only candidate canary built on the RPi, read on ports 5020/5021, and
+  rolled back to the known-good container (see the acceptance record).
+- a learned current-firmware X2 profile with twenty observed FC03/FC04/FC20
+  blocks (nineteen configured after removing one covered subset) is live on
+  the RPi; all three write paths are enabled and monitored with read-after-
+  write evidence.
 
-- serialize the write and any competing read of the affected device/block;
-- after a successful FC06 or FC10 write, read the complete affected cache block
-  from the device through the same paced backend path;
-- commit the actual readback atomically before returning write success, so
-  clamped, normalized, or rejected device values are represented accurately;
-- leave the cache explicitly stale or invalid when the readback fails rather
-  than serving an unmarked pre-write value; and
-- keep the behavior correct for concurrent Home Assistant clients and the
-  Shine/serial path.
+### Known limits
 
-Add simulator and live-broker tests for single-register and multiple-register
-writes, immediate reads, concurrent readers, pacing/transaction ordering, and
-failed readback. Once this contract is implemented and released, remove the
-11-second delay from `growatt_local` and retain only the broker's read-after-
-write synchronization.
+- FC20 is transported as an opaque request/response primitive. Its words do
+  not have a universal semantic map in this repository;
+- VPP registers, discovery payloads, H188/H209, asynchronous frames, and
+  device-family differences remain evidence-gated;
+- physical timeout and retry behavior still needs acceptance testing for each
+  inverter and Shine firmware combination;
+- the dataset demo CLI and live broker have separate code paths;
+- there is no authentication or encryption on the Modbus TCP listeners;
+- the live reference profile is proven on one installation and is not a
+  generic configuration for every Growatt model.
+- setup candidates still require review and a controlled canary before live
+  promotion; the broker does not infer register semantics from observations.
 
-## Design principles
+## Release work
 
-1. **One core backend, many frontends** – Serial bridges, TCP servers, sniffers, and simulators should all build on the same
-   asynchronous backend abstractions so new features immediately benefit every entry point.
-2. **Data first** – Every live interaction should be capturable, replayable, and annotatable. Captures, scans, and datasets are
-   treated as first-class artefacts.
-3. **Composable tooling** – CLI commands, Python APIs, and container images expose small, composable operations that can be
-   scripted into QA pipelines or automated agents.
-4. **Protocol neutrality** – While the project starts with Growatt hardware, nothing in the design assumes Growatt-only
-   semantics. Device descriptions, metadata, and transports must support other vendors and topologies.
-5. **Safe-by-default live operation** – Pacing, CRC validation, and logging guardrails are mandatory whenever the toolkit touches
-   real hardware.
+### 1. Public surface and packaging
 
-## Architectural building blocks
+- keep `growatt-broker` as the live console entry point;
+- keep the dataset demo only as a tested simulator helper, or give it a
+  separate command before expanding its scope;
+- pin Black, Ruff, pytest, and pytest-asyncio compatibility in package extras;
+- test clean installation on supported Python versions and build the Docker
+  image in CI;
+- choose a versioning and release-tag policy before publishing an image.
 
-### Transport adapters
-- RS-485 serial (physical) with configurable baud/byte settings, pacing, and retry policies.
-- Virtual pseudo-terminals to fan out one master connection to multiple logical ports (future).
-- Modbus TCP/RTU-over-TCP connectors for remote access and tunnelling.
-- Optional UDP or MQTT exporters for telemetry mirroring (later phase).
+### 2. Deployment and rollback
 
-### Backend services
-- `LiveSerialBackend` talks to real devices via pyserial/async-serial.
-- `DatasetBackend` replays JSON datasets with optional mutation hooks.
-- `CaptureBackend` wraps any backend to emit JSONL capture events.
-- Future backends include a `SnifferBackend` for passive monitoring and a `ScenarioBackend` for scripted state machines.
+- document stable `/dev/serial/by-path` selection for identical CH340
+  adapters;
+- keep normal cache-plus-Shine and raw-transparent forensic profiles
+  separate;
+- record the exact command, image digest, timing, ports, and evidence path for
+  every live hardware test;
+- keep a known-good image and command available before changing a live Pi;
+- test read-only operation with HA, Shine, and the development listener before
+  any approved write/readback test.
 
-### Device knowledge base
-- Declarative register maps with metadata (type, unit, scaling, enums, access flags).
-- Device families and inheritance to support multiple inverter/PLC variants.
-- Conversion helpers that turn register metadata into human-friendly decoded values for logs and dashboards.
+### 3. Evidence and protocol handoff
 
-### Data acquisition & storage
-- Structured JSONL capture format (timestamp, op, unit, addr/count, registers, annotations).
-- Compaction utilities that fold captures into dataset snapshots with provenance tags.
-- Register discovery reports highlighting unseen addresses, value ranges, and unit assumptions.
+- keep compact, sanitised replay fixtures with provenance;
+- preserve historical reports under `docs/archive/` with supersession banners;
+- publish the evidence index in
+  [`PIITM_PROTOCOL_AND_EVIDENCE.md`](PIITM_PROTOCOL_AND_EVIDENCE.md);
+- hand transport evidence to Growatt_ModbusTCP while keeping register
+  semantics in that project or Growatt inverter info;
+- distinguish `PROVEN_LIVE`, `REPLAYED`, `STATIC_ANALYSIS`,
+  `VENDOR_REFERENCE`, `HYPOTHESIS`, and `NOT_TESTED` in new reports.
 
-### Simulation & scenario engine
-- Tick-driven mutation framework (already prototyped) extended with declarative scenarios (ramps, cycles, PID approximations).
-- Record & playback modes supporting real-time or accelerated timelines.
-- Fault injection hooks (delay, CRC tampering, frame drops) for resilience testing.
+### 4. Cache and scheduler hardening
 
-### Interfaces & packaging
-- `growatt-broker` CLI powering run/capture/simulate/sniff subcommands.
-- Python API for embedding into external tooling or tests.
-- Docker images and HA add-on manifests for turnkey deployment.
-- Devcontainer scripts to simplify contributor workflows.
+- add explicit metrics for queue delay, physical transaction latency,
+  cache age, stale blocks, retries, and write-readback failures;
+- make background polling intervals visible and separate from the minimum
+  inter-transaction spacing;
+- test concurrent HA, Shine, and development reads under timeout and
+  re-enumeration conditions;
+- test write/readback clamping, rejected writes, and a failed readback without
+  serving a stale value as coherent.
 
-## Implementation phases
+### 5. Device and firmware coverage
 
-### Immediate execution plan – live broker first
-**Priority:** get the existing broker back onto the live Home Assistant Raspberry Pi so Growatt battery control can be developed against the real inverter before changing the deployment architecture.
+- reproduce the X2 transport test on a second controlled window;
+- compare old ShineWiFi-X and ShineWiLan-X2 framing and timing without
+  assuming they are interchangeable;
+- add replay fixtures for known inverter families only when the model,
+  firmware, and source capture are recorded;
+- leave VPP and register interpretation to the Growatt register projects.
 
-**Initial operating mode**
-- Deploy the current Docker broker manually on the live HA system, even though Home Assistant may warn about an unmanaged container.
-- Connect production Home Assistant and the HA-core development container to the broker over the LAN Modbus-TCP endpoint.
-- Start with ShineWiFi disabled if that reduces operational risk, but keep Shine passthrough and sniffing as supported, optional functionality.
-- Record the exact inverter serial settings, TCP ports, unit ID, Docker command, and rollback procedure.
+## Repository cleanup
 
-**Battery-first milestone**
-- Make Growatt battery telemetry reliable: state of charge, battery charge/discharge power, PV power, household load, and grid import/export.
-- Identify and safely validate the writable registers needed for tariff-based charging, discharging, power limits, SoC limits, and any time-of-use controls.
-- Make register writes cache-coherent before depending on TOU controls: FC06/FC10 must perform a paced read-after-write of the affected complete block and publish the actual readback atomically. This unblocks removal of the temporary HA-side cache wait.
-- Implement the first dynamic-tariff control loop with explicit reserve-SoC, efficiency, export, and failure safeguards.
-- Keep the broker stable and observable while the HA integration and control logic evolve independently.
+The release surface should contain source, small fixtures, current operating
+guides, and evidence indexes. Remove generated logs and build artefacts from
+the release tree. Before declaring the repository public, remove the tracked
+large logs and research dumps from git history in a separately reviewed
+cleanup. The two untracked logs in the working tree must never be committed.
 
-**ShineWiFi follow-up**
-- Re-enable Shine passthrough when needed so the Shine app remains usable in parallel with HA.
-- Capture and analyse undocumented or unusual Shine frames through the broker's JSONL logging/sniff stream.
-- Treat framing, timing, CRC, unsolicited frames, and unknown function codes as first-class compatibility cases.
+Historical HA-DEV reports remain useful to maintainers but are not current
+instructions. They should live under `docs/archive/` and carry the source
+commit, date, hardware profile, and supersession link.
 
-**Later architecture migration**
-- After the live battery workflow is stable, migrate the broker functionality to a native Home Assistant implementation.
-- Decide at that point whether the final form should be a native HA integration, a Supervisor-managed add-on, or a split where the broker remains a managed service and HA owns the device entities.
-- Preserve the LAN development workflow and Shine observability during the migration.
+## Suggested release gates
 
-### Phase 0 – Prototype foundation (stabilise current code)
-**Objectives**
-- Preserve existing behaviours while documentation and tests are refreshed.
-- Ensure datasets and simulator utilities remain usable during the transition.
-
-**Key work items**
-- Audit existing CLI modes and tests; convert brittle scripts into pytest coverage where practical.
-- Capture current configuration knobs in documentation.
-- Establish continuous integration hooks (lint, formatting) specific to the broker package.
-
-**Deliverables**
-- Updated README and roadmap (this document).
-- Baseline tests covering CRC helpers, dataset loading, and CLI smoke runs.
-
-### Phase 1 – ShineWiFi/HA interposer & sniffer (current focus)
-**Objectives**
-- Let Home Assistant and the ShineWiFi dongle share a Growatt inverter safely.
-- Produce actionable capture files that surface undocumented registers and their context.
-
-**Key work items**
-- Refactor `growatt_broker.broker` to consume the async backend, eliminating duplicated live/device logic.
-- Harden the dual-port broker (serial Shine + Modbus TCP) with pacing, retry, and reconnect strategies and configurable
-  safety limits (minimum poll interval, max outstanding requests).
-- Extend `CaptureBackend` to include request/response timings, CRC status, and source port metadata.
-- Implement a passive sniff mode: attach to RS-485 receive line, parse frames, and annotate them using the register metadata.
-- Ship a `growatt-broker sniff` CLI that can run alongside the broker for man-in-the-middle monitoring.
-- Provide dataset compaction & diff tooling (`capture -> dataset -> report`) that highlights newly observed registers.
-- Document ShineWiFi/HA deployment recipes, troubleshooting steps, and safety caveats (e.g., bus exclusivity, grounding).
-
-**Deliverables**
-- Unified CLI with `run`, `capture`, and `sniff` modes sharing backend plumbing.
-- JSONL capture schema reference and example analysis notebook/script.
-- Updated Docker/devcontainer recipes tested against real hardware.
-
-### Phase 2 – Bus insight & dataset generation
-**Objectives**
-- Automate discovery of register behaviour and scaling across different inverter families.
-- Provide tooling to interrogate devices without permanent live connections.
-
-**Key work items**
-- Active scanning routines with rate limiting and selectable register ranges.
-- Annotation pipeline that maps register values to engineering units/descriptions using the knowledge base.
-- CLI/GUI reports for new vs known registers, value distributions, and suspected enumerations.
-- Dataset bundle format capturing scan metadata, firmware version, and optional Shine serial number.
-
-**Deliverables**
-- `growatt-broker scan` command producing dataset bundles plus summary reports.
-- Knowledge base schema and initial library of device descriptions.
-- Enhanced simulator datasets annotated with `_source`, firmware, and register semantics.
-
-### Phase 3 – Scenario-driven simulation & playback
-**Objectives**
-- Recreate complex operational patterns without physical hardware.
-- Enable accelerated regression suites and behavioural demos.
-
-**Key work items**
-- Scenario definition DSL/JSON (states, transitions, register assignments, timers).
-- Scheduler capable of running multiple scenarios simultaneously (multi-device or multi-unit setups).
-- Time-warp controls for playback (real-time, accelerated, stepped) and API hooks for tests to advance time deterministically.
-- Libraries of reusable scenarios (charge cycle, grid outage, thermal ramp, inverter fault injection).
-
-**Deliverables**
-- `growatt-broker simulate` enhancements to load scenarios alongside datasets.
-- Example Home Assistant automation tests running against accelerated playback.
-- Documentation & tutorials for writing custom scenarios.
-
-### Phase 4 – Automation & ecosystem integrations
-**Objectives**
-- Turn Modbus Workbench into a drop-in tool for QA teams and power users beyond Home Assistant.
-
-**Key work items**
-- Virtual serial fan-out (pty multiplexer) so multiple RTU masters can coexist.
-- Optional protocol bridges (Modbus↔MQTT/REST) for telemetry export.
-- Scriptable QC/QA interface generating strongly-typed helpers from device descriptions.
-- Packaging & release automation (PyPI, Docker Hub, HA add-on store).
-
-**Deliverables**
-- Stable 1.x release branded as Modbus Workbench.
-- Published API reference and example automation notebooks/test suites.
-- Hardened deployment guides and upgrade playbooks.
-
-## Cross-cutting concerns
-- **Observability** – structured logging, metrics, and optional OpenTelemetry exporters for long-running brokers.
-- **Security** – transport encryption for TCP modes (TLS/stunnel), credential handling, and principle of least privilege for
-  file paths and serial devices.
-- **Testing** – CI coverage for protocol edge cases, scenario regression tests, and hardware-in-the-loop smoke tests.
-- **Documentation** – living guides for dataset provenance, register annotations, and troubleshooting (for both HA users and
-  broader Modbus audiences).
-
-## Scenario backlog (beyond initial scope)
-- **Grid fault drills** – simulate brownouts or frequency excursions to test DER controller reactions.
-- **Performance benchmarking** – measure how many concurrent TCP clients or scenario engines the toolkit can support on
-  constrained hardware.
-- **Educational labs** – step-by-step tutorials that combine sniffing, scanning, and scenario scripting to teach Modbus
-  diagnostics to new contributors.
-
-Contributions and feedback on this roadmap are welcome—open issues or PRs in the Modbus Workbench repository to discuss
-priorities or propose additional phases.
+1. A clean checkout passes the standalone install, Ruff, Black, tests, and
+   Docker build.
+2. `growatt-broker --help` and the simulator help command work without HA-core.
+3. Public docs contain no private IPs, credentials, unstable `ttyUSB` aliases,
+   or obsolete response-cache claims.
+4. A read-only live acceptance run records HA, Shine, development TCP, queue
+   timing, CRC/exception counters, and rollback evidence.
+5. One explicitly approved write/readback run confirms the cache contract and
+   leaves the inverter in the documented safe state.
+6. A release tag and image digest can be handed to Growatt_ModbusTCP developers
+   together with the compact protocol/evidence index.

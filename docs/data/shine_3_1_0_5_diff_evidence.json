@@ -59,6 +59,7 @@
       "softap_config_object_size": 108,
       "ip_literal_hits": ["0x42e48", "0x6cdbe"],
       "ip": "192.168.10.100",
+      "ip_scope": "firmware_static_default_not_live_installation",
       "netmask": "255.255.255.0",
       "gateway": "0.0.0.0",
       "ssid_source": "CONFIG_FLASH_BACKED_RUNTIME_BUFFER_NOT_FIELD_PROVEN",

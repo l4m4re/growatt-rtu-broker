@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "name": "Growatt MIN 6000TL-XH + ShineWiFi-X (old firmware)",
+  "source": "observed-and-reviewed",
+  "mode": "cache+shine-predictive",
+  "operation_mode": "live",
+  "inverter": {
+    "vendor": "Growatt",
+    "model": "MIN 6000TL-XH",
+    "firmware": "ALba10010129"
+  },
+  "logger": {
+    "vendor": "Growatt",
+    "model": "ShineWiFi-X",
+    "firmware": "3.1.0.5"
+  },
+  "write_policy": {
+    "prod_tcp": "enabled",
+    "dev_tcp": "enabled",
+    "shine": "transparent"
+  },
+  "transport": {
+    "inverter": {
+      "device": "/dev/serial/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.4:1.0-port0",
+      "baud": 115200,
+      "bytes": "8N1"
+    },
+    "logger": {
+      "device": "/dev/serial/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.3:1.0-port0",
+      "baud": 115200,
+      "bytes": "8N1"
+    }
+  },
+  "poll_plan": [
+    {
+      "function": 4,
+      "start": 3000,
+      "count": 125,
+      "name": "input_3000",
+      "interval_s": 10.0,
+      "max_age_s": 15.0,
+      "service_class": "control",
+      "priority": 0
+    },
+    {
+      "function": 4,
+      "start": 3125,
+      "count": 125,
+      "name": "input_3125",
+      "interval_s": 10.0,
+      "max_age_s": 15.0,
+      "service_class": "control",
+      "priority": 0
+    },
+    {
+      "function": 3,
+      "start": 3000,
+      "count": 125,
+      "name": "holding_3000",
+      "interval_s": 60.0,
+      "max_age_s": 180.0,
+      "service_class": "monitoring",
+      "priority": 2
+    },
+    {
+      "function": 3,
+      "start": 180,
+      "count": 20,
+      "name": "holding_180",
+      "interval_s": 300.0,
+      "max_age_s": 600.0,
+      "service_class": "monitoring",
+      "priority": 5
+    },
+    {
+      "function": 3,
+      "start": 209,
+      "count": 15,
+      "name": "holding_209",
+      "interval_s": 300.0,
+      "max_age_s": 600.0,
+      "service_class": "monitoring",
+      "priority": 5
+    },
+    {
+      "function": 3,
+      "start": 0,
+      "count": 125,
+      "name": "holding_0",
+      "interval_s": 300.0,
+      "max_age_s": 600.0,
+      "service_class": "diagnostic",
+      "priority": 6
+    },
+    {
+      "function": 4,
+      "start": 3250,
+      "count": 125,
+      "name": "input_3250",
+      "interval_s": 300.0,
+      "max_age_s": 600.0,
+      "service_class": "diagnostic",
+      "priority": 6
+    },
+    {
+      "function": 32,
+      "start": 0,
+      "count": 100,
+      "name": "shine_fc20_0_100",
+      "interval_s": 9.0,
+      "max_age_s": 15.0,
+      "service_class": "shine",
+      "priority": 1
+    }
+  ],
+  "metadata": {
+    "notes": [
+      "The poll plan is the former hardcoded MIN/TL-XH native plan, now explicit configuration.",
+      "The Shine serial number is deliberately not part of the installation profile.",
+      "Transport values are evidence for this installation; they are not universal defaults."
+    ]
+  }
+}

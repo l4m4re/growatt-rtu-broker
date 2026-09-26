@@ -13,7 +13,7 @@ signal. After two consecutive unanswered physical attempts it:
 
 1. closes the current serial handle;
 2. reopens the stable paths captured at startup, preferring matching
-   `/dev/serial/by-id` or `/dev/serial/by-path` aliases;
+   stable `/dev/serial/by-path` aliases;
 3. clears the RTU framer and operating-system input/output buffers;
 4. retries the next eligible request and emits structured reopen events.
 
@@ -29,11 +29,12 @@ namespace. A Docker `--device` mapping to `/dev/inverter` is bound to the old
 device node and cannot follow a host-side USB re-enumeration by itself.
 
 For a deployment where Shine or the inverter may be physically replugged, use
-the stable host aliases in `.env` and enable the hot-plug deployment:
+stable `/dev/serial/by-path` paths in `.env` for the two identical CH340
+adapters and enable the hot-plug deployment:
 
 ```ini
-INV_DEV=/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
-SHINE_DEV=/dev/serial/by-id/usb-04e2_1410-if00-port0
+INV_DEV=/dev/serial/by-path/<inverter-port>
+SHINE_DEV=/dev/serial/by-path/<shine-x2-port>
 HOTPLUG_DEVICES=1
 ```
 
@@ -44,10 +45,8 @@ updated symlink target and reopen the newly enumerated tty. This uses
 an equivalent udev-aware host supervisor with a narrower device policy is
 preferable where available.
 
-The currently running no-Shine production baseline was restored by recreating
-the stale container mapping after the inverter adapter returned as a new
-`ttyUSB` minor. It should not be switched to cache mode until an explicit
-canary is reviewed. The cache mode is opt-in:
+The 2026-09-25 live reference uses `cache+shine-predictive` with the X2 path.
+`legacy` remains the rollback profile and cache modes are still explicit:
 
 ```text
 --mode legacy       # current rollback/default
