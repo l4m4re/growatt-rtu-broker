@@ -840,7 +840,7 @@ class Downstream:
         resp = b""
         attempts = (
             1
-            if is_write or source == "SHINE"
+            if is_write or source in {"SHINE", "BACKGROUND"}
             else 2 if standard_modbus and is_retryable_standard_read(req) else 1
         )
         physical_latency_ms = 0.0
