@@ -551,6 +551,8 @@ class Downstream:
         fmt: str,
         *,
         rtimeout: float = 0.9,
+        fc20_timeout: float = 2.0,
+        reopen_after_timeouts: int = 10,
         events: Optional[EventHub] = None,
     ):
         self.dev = dev
@@ -585,8 +587,9 @@ class Downstream:
         self._queue_condition = threading.Condition()
         self._pending: list[DownstreamRequest] = []
         self.rtimeout = float(rtimeout)
+        self.fc20_timeout = float(fc20_timeout)
         self._consecutive_timeouts = 0
-        self._reopen_after_timeouts = 2
+        self._reopen_after_timeouts = int(reopen_after_timeouts)
         self._async_frame_handler: Callable[[bytes], None] | None = None
         self.events = events
         self._scheduler = threading.Thread(
@@ -843,6 +846,7 @@ class Downstream:
         physical_latency_ms = 0.0
         retry_count = 0
         transaction_started = time.monotonic()
+        timeout = self.fc20_timeout if req[1] == 0x20 else self.rtimeout
         for attempt in range(attempts):
             if not self._ensure_serial():
                 break
@@ -871,7 +875,7 @@ class Downstream:
                 physical_started = time.monotonic()
                 resp = self.framer.read_standard_frame(
                     req,
-                    timeout=self.rtimeout,
+                    timeout=timeout,
                     on_unmatched=lambda frame: self._report_async_frame(req, frame),
                     allow_unit_zero_wildcard=source == "SHINE",
                 )
@@ -884,7 +888,7 @@ class Downstream:
                         and (frame[0] == req[0] or (req[0] == 0 and frame[0] != 0))
                         and frame[1] in (req[1], req[1] | 0x80)
                     ),
-                    timeout=self.rtimeout,
+                    timeout=timeout,
                     on_unmatched=lambda frame: self._report_async_frame(req, frame),
                 )
             physical_latency_ms += (time.monotonic() - physical_started) * 1000
@@ -914,7 +918,8 @@ class Downstream:
                 to="INVERTER",
                 source=source,
                 from_client=client,
-                timeout=self.rtimeout,
+                function=req[1] if len(req) > 1 else None,
+                timeout=timeout,
             )
         if self.events:
             self.events.emit(
@@ -2478,6 +2483,18 @@ def main():
     ap.add_argument(
         "--rtimeout", type=float, default=None, help="RTU read timeout seconds"
     )
+    ap.add_argument(
+        "--fc20-timeout",
+        type=float,
+        default=None,
+        help="RTU timeout seconds for FC20 reads",
+    )
+    ap.add_argument(
+        "--reopen-after-timeouts",
+        type=int,
+        default=None,
+        help="Reopen the inverter serial port after this many standard read timeouts",
+    )
     for source in ("prod", "dev"):
         ap.add_argument(
             f"--{source}-tcp-writes",
@@ -2522,6 +2539,10 @@ def main():
     args.baud = args.baud or 9600
     args.bytes = args.bytes or "8E1"
     args.rtimeout = args.rtimeout if args.rtimeout is not None else 0.9
+    args.fc20_timeout = args.fc20_timeout if args.fc20_timeout is not None else 2.0
+    args.reopen_after_timeouts = (
+        args.reopen_after_timeouts if args.reopen_after_timeouts is not None else 10
+    )
     configured_writes = installation_config.write_policy if installation_config else {}
     args.shine_policy = args.shine_policy or configured_writes.get("shine", "disabled")
     args.prod_tcp_writes = args.prod_tcp_writes or configured_writes.get(
@@ -2594,6 +2615,8 @@ def main():
         inv_baud,
         inv_bytes,
         rtimeout=args.rtimeout,
+        fc20_timeout=args.fc20_timeout,
+        reopen_after_timeouts=args.reopen_after_timeouts,
         events=events,
     )
     if args.mode != "legacy":

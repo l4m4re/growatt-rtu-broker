@@ -37,9 +37,11 @@ and inverter-family semantics belong in
 | `cache+shine-direct` | Shared scheduler with direct Shine forwarding. |
 
 On the current reference Pi, the normal X2 profile uses 115200 8N1 on both
-ports, no artificial inter-transaction delay, and a 0.9 second RTU timeout for
-all Modbus reads, including FC20. The cache poller opportunistically refreshes the oldest configured block when
-it reaches a four-second target age. These values are deployment evidence, not
+ports, no artificial inter-transaction delay, a 0.9 second RTU timeout for
+standard reads, and a separate 2.0 second timeout for FC20 reads. The serial
+port is reopened after ten consecutive standard physical timeouts. The cache
+poller opportunistically refreshes the oldest configured block when it reaches
+a nine-second target age. These values are deployment evidence, not
 universal device requirements.
 
 The ShineWiLan-X2 and inverter adapters are both CH340-class devices without

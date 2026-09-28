@@ -57,6 +57,8 @@ async def test_downstream_timeout_logged(tmp_path):
                 f"127.0.0.1:{tcp_port}",
                 "--rtimeout",
                 "0.2",
+                "--reopen-after-timeouts",
+                "1",
                 "--log",
                 "-",
                 stdout=asyncio.subprocess.PIPE,

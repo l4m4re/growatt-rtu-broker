@@ -31,7 +31,8 @@ reference profile is:
 inverter: 115200 8N1, stable /dev/serial/by-path alias
 Shine X2: 115200 8N1, stable /dev/serial/by-path alias
 minimum physical transaction period: none; the single-owner queue still serializes transactions
-RTU timeout: 0.9 s for standard FC03/FC04 reads
+RTU timeout: 0.9 s for standard FC03/FC04 reads and 2.0 s for FC20 reads
+serial reopen threshold: 10 consecutive standard physical timeouts
 TCP: 5020 production, 5021 development, 5700 JSONL sniff stream
 mode: cache+shine
 ```
