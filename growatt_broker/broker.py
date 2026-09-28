@@ -296,10 +296,6 @@ class RTUFramer:
             for frame_start in range(max(0, end_limit - 3)):
                 if frame_start + 1 >= end_limit:
                     break
-                if data[frame_start] not in (0, unit) and not (
-                    allow_unit_zero_wildcard and unit == 0
-                ):
-                    continue
                 function = data[frame_start + 1]
                 lengths: list[int] = []
                 if function & 0x80:
@@ -314,6 +310,8 @@ class RTUFramer:
                     if frame_start + 6 < end_limit:
                         lengths.append(9 + data[frame_start + 6])
                 else:
+                    if frame_start > 64:
+                        continue
                     lengths.extend(
                         range(4, min(32, end_limit - frame_start) + 1)
                     )
