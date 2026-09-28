@@ -293,11 +293,36 @@ class RTUFramer:
             data: bytes, limit: int | None = None
         ) -> tuple[int, int, bytes] | None:
             end_limit = len(data) if limit is None else min(limit, len(data))
-            for frame_start in range(end_limit - 3):
-                for frame_end in range(frame_start + 4, end_limit + 1):
-                    candidate = data[frame_start:frame_end]
-                    if crc_ok(candidate):
-                        return frame_start, frame_end, candidate
+            for frame_start in range(max(0, end_limit - 3)):
+                if frame_start + 1 >= end_limit:
+                    break
+                if data[frame_start] not in (0, unit) and not (
+                    allow_unit_zero_wildcard and unit == 0
+                ):
+                    continue
+                function = data[frame_start + 1]
+                lengths: list[int] = []
+                if function & 0x80:
+                    lengths.append(5)
+                elif function in (0x03, 0x04, 0x20):
+                    if frame_start + 2 < end_limit:
+                        lengths.append(5 + data[frame_start + 2])
+                elif function in (0x06,):
+                    lengths.append(8)
+                elif function == 0x10:
+                    lengths.append(8)
+                    if frame_start + 6 < end_limit:
+                        lengths.append(9 + data[frame_start + 6])
+                else:
+                    lengths.extend(
+                        range(4, min(32, end_limit - frame_start) + 1)
+                    )
+                for frame_length in lengths:
+                    frame_end = frame_start + frame_length
+                    if frame_end <= end_limit:
+                        candidate = data[frame_start:frame_end]
+                        if crc_ok(candidate):
+                            return frame_start, frame_end, candidate
             return None
 
         def possible_partial_response(candidate: bytes) -> bool:
@@ -324,9 +349,14 @@ class RTUFramer:
                 limit -= frame_end
                 on_unmatched(candidate)
 
+        deadline = start + timeout
         while True:
+            if time.perf_counter() >= deadline:
+                return b""
             if self.ser.in_waiting:
                 self._read_available("normal_read")
+                if time.perf_counter() >= deadline:
+                    return b""
             buffer = bytes(self.buf)
             response = find_standard_response(
                 buffer,
@@ -345,8 +375,6 @@ class RTUFramer:
             if on_unmatched is not None and time.perf_counter() - self.last >= self.gap:
                 report_unmatched_prefix(len(self.buf))
 
-            if time.perf_counter() - start > timeout:
-                return b""
             time.sleep(max(0.001, self.char_time * 0.5))
 
     def read_matching(

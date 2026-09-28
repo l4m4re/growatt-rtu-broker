@@ -298,6 +298,22 @@ def test_matching_reader_honors_deadline_during_continuous_input() -> None:
     assert time.perf_counter() - started < 0.2
 
 
+def test_standard_reader_honors_deadline_with_large_unframed_buffer() -> None:
+    serial = FakeSerial()
+    serial.feed(b"\x55" * 100_000)
+    framer = RTUFramer(serial, char_time=0.001)
+
+    started = time.perf_counter()
+    result = framer.read_standard_frame(
+        request(0x04, 0, 125),
+        timeout=0.05,
+        on_unmatched=lambda _frame: None,
+    )
+
+    assert result == b""
+    assert time.perf_counter() - started < 0.2
+
+
 def test_reader_reports_unframed_serial_bytes() -> None:
     serial = FakeSerial()
     serial.feed(b"startup diagnostic\r\n")
