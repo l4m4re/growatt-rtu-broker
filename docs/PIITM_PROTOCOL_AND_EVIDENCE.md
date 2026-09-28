@@ -67,8 +67,8 @@ for parser and replay tests. They are not a universal register map:
 The broker validates framing and CRC, associates responses with queued
 requests, and exposes exceptions rather than turning them into successful
 reads. Cache mode refreshes a complete native block on a miss. FC06/FC10
-writes invalidate overlapping blocks and perform complete-block readback before
-reporting coherent success.
+writes mark overlapping blocks stale and return the physical write response
+immediately; the next cache refresh makes later reads coherent.
 
 ## Shine and firmware evidence
 

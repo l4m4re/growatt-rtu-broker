@@ -1606,9 +1606,11 @@ class CacheGatewayService:
         client: str,
         source: str,
     ) -> tuple[RegisterKey, ...]:
-        """Remove affected snapshots before a physical write can execute."""
+        """Mark affected snapshots stale before a physical write executes."""
         with self._lock:
-            invalidated = self.cache.invalidate_overlapping(key)
+            invalidated = self.cache.mark_stale_overlapping(
+                key, captured_at=time.monotonic() - 30.0
+            )
         self._emit(
             "cache_invalidated_before_write",
             role="INFO",
@@ -1678,7 +1680,9 @@ class CacheGatewayService:
                 for offset in range(7, 7 + key.count * 2, 2)
             )
         )
-        invalidated = self._invalidate_before_write(key, client=client, source=source)
+        invalidated = self._invalidate_before_write(
+            key, client=client, source=source
+        )
         self._acquire_write_slot(source)
         try:
             started = time.monotonic()
@@ -1752,13 +1756,34 @@ class CacheGatewayService:
                 write_reason = "physical_write_readback_confirmed"
                 physical_success = True
 
-            readback_ok = self._post_write(
-                request,
-                client=client,
-                source=source,
-                invalidated=invalidated,
-            )
             if physical_success:
+                if source == "SHINE":
+                    self._emit(
+                        "tcp_write_acknowledged",
+                        role="INFO",
+                        client=client,
+                        source=source,
+                        function=request[1],
+                        start=key.start,
+                        count=key.count,
+                        values=values,
+                        physical_success=True,
+                        cache_refresh_pending=True,
+                        duration_ms=round((time.monotonic() - started) * 1000, 3),
+                        generation=self.cache.latest_generation,
+                    )
+                    return GatewayResult(
+                        "served",
+                        client,
+                        response=client_response,
+                        reason="physical_write_acknowledged",
+                    )
+                readback_ok = self._post_write(
+                    request,
+                    client=client,
+                    source=source,
+                    invalidated=invalidated,
+                )
                 write_reason = (
                     "physical_write_readback_confirmed"
                     if readback_ok
@@ -1784,6 +1809,12 @@ class CacheGatewayService:
                     response=client_response,
                     reason=write_reason,
                 )
+            self._post_write(
+                request,
+                client=client,
+                source=source,
+                invalidated=invalidated,
+            )
             return GatewayResult(
                 "failed", client, response=client_response, reason=write_reason
             )
@@ -1802,7 +1833,6 @@ class CacheGatewayService:
         del now
         is_write = request[1] in (0x06, 0x10)
         write_key = self._write_key(request) if is_write else None
-        invalidated: tuple[RegisterKey, ...] = ()
         if is_write:
             if write_key is None or not self.write_policy.allows(source, write_key):
                 response = self._exception_response(request, 0x02)
@@ -1816,7 +1846,7 @@ class CacheGatewayService:
                 return GatewayResult(
                     "failed", client, response=response, reason="write_denied"
                 )
-            invalidated = self._invalidate_before_write(
+            self._invalidate_before_write(
                 write_key, client=client, source=source
             )
             self._acquire_write_slot(source)
@@ -1832,7 +1862,6 @@ class CacheGatewayService:
                 is_write=is_write,
             )
             if response:
-                readback_ok = True
                 physical_exception = is_write and self._valid_physical_exception(
                     response,
                     request,
@@ -1849,18 +1878,12 @@ class CacheGatewayService:
                     is not None
                 )
                 if is_write and write_key is not None:
-                    readback_ok = self._post_write(
-                        request,
-                        client=client,
-                        source=source,
-                        invalidated=invalidated,
-                    )
                     self._emit(
                         "on_demand_write_forwarded",
                         role="INFO",
                         client=client,
                         source=source,
-                        readback_success=readback_ok,
+                        cache_refresh_pending=True,
                         **parse_rtu(request),
                     )
                 self._emit(
@@ -1887,13 +1910,6 @@ class CacheGatewayService:
                             )
                         )
                     ),
-                )
-            if is_write and write_key is not None:
-                self._post_write(
-                    request,
-                    client=client,
-                    source=source,
-                    invalidated=invalidated,
                 )
             return GatewayResult(
                 "failed", client, reason="on-demand timeout"

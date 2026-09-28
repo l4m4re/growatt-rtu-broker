@@ -17,7 +17,8 @@ The public package and command are still named `growatt-rtu-broker` and
 - optional virtual or direct Shine path;
 - structured JSONL traffic logs;
 - a dataset-backed simulator and analysis tools;
-- FC06/FC10 write invalidation and complete-block readback in cache mode.
+- FC06/FC10 write invalidation with immediate physical acknowledgements; the
+  affected cache block is refreshed later by the poller.
 
 The cache is a register-block cache. It is not a duplicate TCP response cache.
 The installation examples identify each native block with its function, start register, count, and name. Refresh timing is broker policy, not per-example metadata. FC20 is fetched on demand only.

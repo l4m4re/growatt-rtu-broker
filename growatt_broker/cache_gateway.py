@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from statistics import median
 from threading import RLock
@@ -184,6 +184,25 @@ class RegisterCache:
         for snapshot_key in invalidated:
             del self._blocks[snapshot_key]
         return invalidated
+
+    def mark_stale_overlapping(
+        self, key: RegisterKey, *, captured_at: float
+    ) -> tuple[RegisterKey, ...]:
+        """Keep affected values available but force a physical refresh."""
+        stale: list[RegisterKey] = []
+        for snapshot_key, snapshot in tuple(self._blocks.items()):
+            if (
+                snapshot_key.function == key.function
+                and snapshot_key.start < key.end
+                and key.start < snapshot_key.end
+            ):
+                self._blocks[snapshot_key] = replace(
+                    snapshot,
+                    captured_at=captured_at,
+                    quality=CacheQuality.FAILED,
+                )
+                stale.append(snapshot_key)
+        return tuple(stale)
 
     def _fresh_candidates(
         self, key: RegisterKey, *, now: float, max_age: float
