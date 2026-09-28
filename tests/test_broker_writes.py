@@ -45,7 +45,7 @@ class WriteDownstream:
         return add_crc(bytes([request[0], request[1], count * 2]) + b"\x00\x01" * count)
 
 
-def test_fc06_is_physically_written_and_read_back() -> None:
+def test_fc06_is_physically_written_without_readback() -> None:
     downstream = WriteDownstream()
     gateway = _gateway(downstream)
     gateway.cache.put_block(
@@ -59,16 +59,12 @@ def test_fc06_is_physically_written_and_read_back() -> None:
     result = gateway.handle_write_request(request, client="TCP:dev", source="DEV_TCP")
 
     assert result.status == "served"
-    assert result.reason == "physical_write_readback_confirmed"
-    assert downstream.requests == [
-        request,
-        add_crc(bytes.fromhex("010300b40014")),
-    ]
+    assert result.reason == "physical_write_acknowledged"
+    assert downstream.requests == [request]
     assert downstream.kwargs[0]["is_write"] is True
-    assert (
-        gateway.cache.read(RegisterKey(3, 188, 1), now=time.monotonic(), max_age=5)
-        is not None
-    )
+    assert gateway.cache.read(
+        RegisterKey(3, 188, 1), now=time.monotonic(), max_age=5
+    ) is None
     read_result = gateway.handle_standard_request(
         add_crc(bytes.fromhex("010300bc0001")),
         client="TCP:dev",
@@ -121,7 +117,7 @@ def test_write_invalidates_cache_before_physical_transaction() -> None:
     assert result.status == "served"
 
 
-def test_fc10_preserves_values_and_uses_native_read_back() -> None:
+def test_fc10_preserves_values_without_readback() -> None:
     downstream = WriteDownstream()
     gateway = _gateway(downstream)
     request = add_crc(bytes.fromhex("01100be000020400010002"))
@@ -131,7 +127,7 @@ def test_fc10_preserves_values_and_uses_native_read_back() -> None:
     assert result.status == "served"
     assert downstream.requests[0] == request
     assert downstream.kwargs[0]["source"] == "PROD_TCP"
-    assert downstream.requests[1] == add_crc(bytes.fromhex("01030bb8007d"))
+    assert len(downstream.requests) == 1
 
 
 def test_write_policy_allows_unknown_holding_range_when_enabled() -> None:
@@ -189,10 +185,7 @@ def test_write_timeout_returns_gateway_exception_without_fake_success() -> None:
     assert result.status == "failed"
     assert result.reason == "physical_timeout"
     assert result.response == add_crc(bytes.fromhex("01860b"))
-    assert downstream.requests == [
-        request,
-        add_crc(bytes.fromhex("010300b40014")),
-    ]
+    assert downstream.requests == [request]
 
 
 def test_physical_write_exception_is_propagated() -> None:
@@ -215,7 +208,7 @@ def test_physical_write_exception_is_propagated() -> None:
     assert result.reason == "physical_exception"
     assert result.response == add_crc(bytes.fromhex("018602"))
     assert downstream.requests[0] == request
-    assert downstream.requests[1][:-2] == bytes.fromhex("010300b40014")
+    assert len(downstream.requests) == 1
 
 
 def test_physical_read_exception_is_returned_and_not_cached() -> None:
@@ -268,12 +261,11 @@ def test_lost_write_ack_reconciles_cache_but_stays_failed() -> None:
     assert result.status == "failed"
     assert result.reason == "physical_timeout"
     assert downstream.requests[0] == request
-    assert downstream.requests[1][:-2] == bytes.fromhex("010300b40014")
+    assert len(downstream.requests) == 1
     refreshed = gateway.cache.read(
         RegisterKey(3, 188, 1), now=time.monotonic(), max_age=5
     )
-    assert refreshed is not None
-    assert refreshed.words == (1,)
+    assert refreshed is None
 
 
 def test_physical_write_exception_reconciles_cache() -> None:
@@ -301,13 +293,10 @@ def test_physical_write_exception_reconciles_cache() -> None:
     assert result.status == "failed"
     assert result.reason == "physical_exception"
     assert result.response == add_crc(bytes.fromhex("018602"))
-    assert len(downstream.requests) == 3
-    assert downstream.requests[1][:-2] == bytes.fromhex("010300b40014")
-    assert downstream.requests[2][:-2] == bytes.fromhex("010300b40014")
-    assert (
-        gateway.cache.read(RegisterKey(3, 188, 1), now=time.monotonic(), max_age=5)
-        is not None
-    )
+    assert len(downstream.requests) == 1
+    assert gateway.cache.read(
+        RegisterKey(3, 188, 1), now=time.monotonic(), max_age=5
+    ) is None
 
 
 def test_fc10_reconciles_all_overlapping_native_blocks() -> None:
@@ -326,19 +315,13 @@ def test_fc10_reconciles_all_overlapping_native_blocks() -> None:
     result = gateway.handle_write_request(request, client="TCP:dev", source="DEV_TCP")
 
     assert result.status == "served"
-    assert downstream.requests == [
-        request,
-        add_crc(bytes.fromhex("010300b40014")),
-        add_crc(bytes.fromhex("010300d1000f")),
-    ]
-    assert (
-        gateway.cache.read(RegisterKey(3, 180, 20), now=time.monotonic(), max_age=5)
-        is not None
-    )
-    assert (
-        gateway.cache.read(RegisterKey(3, 209, 15), now=time.monotonic(), max_age=5)
-        is not None
-    )
+    assert downstream.requests == [request]
+    assert gateway.cache.read(
+        RegisterKey(3, 180, 20), now=time.monotonic(), max_age=5
+    ) is None
+    assert gateway.cache.read(
+        RegisterKey(3, 209, 15), now=time.monotonic(), max_age=5
+    ) is None
 
 
 def test_invalid_physical_write_response_returns_gateway_exception() -> None:
@@ -359,16 +342,14 @@ def test_invalid_physical_write_response_returns_gateway_exception() -> None:
     assert result.response == add_crc(bytes.fromhex("01860b"))
 
 
-def test_failed_readback_leaves_holding_cache_invalidated() -> None:
+def test_write_acknowledgement_leaves_holding_cache_invalidated() -> None:
     request = add_crc(bytes.fromhex("010600bc0001"))
 
     class ReadbackFailureDownstream(WriteDownstream):
         def transact(self, request: bytes, **kwargs: object) -> bytes:
             self.requests.append(request)
             self.kwargs.append(kwargs)
-            if request[1] == 0x06:
-                return request
-            return b""
+            return request
 
     downstream = ReadbackFailureDownstream()
     gateway = _gateway(downstream)
@@ -382,7 +363,7 @@ def test_failed_readback_leaves_holding_cache_invalidated() -> None:
     result = gateway.handle_write_request(request, client="TCP:dev", source="DEV_TCP")
 
     assert result.status == "served"
-    assert result.reason == "physical_write_readback_failed"
+    assert result.reason == "physical_write_acknowledged"
     assert (
         gateway.cache.read(RegisterKey(3, 188, 1), now=time.monotonic(), max_age=5)
         is None
@@ -469,7 +450,7 @@ def test_read_waits_while_write_and_readback_are_unresolved() -> None:
     release.set()
     write_thread.join(timeout=1)
     read_thread.join(timeout=1)
-    assert write_result[0].reason == "physical_write_readback_confirmed"
+    assert write_result[0].reason == "physical_write_acknowledged"
     assert read_result[0].status == "served"
 
 

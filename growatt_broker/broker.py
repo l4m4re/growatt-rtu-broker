@@ -1517,78 +1517,6 @@ class CacheGatewayService:
     def _exception_response(request: bytes, code: int) -> bytes:
         return add_crc(bytes([request[0], request[1] | 0x80, code]))
 
-    def _post_write(
-        self,
-        request: bytes,
-        *,
-        client: str,
-        source: str,
-        invalidated: tuple[RegisterKey, ...] | None = None,
-    ) -> bool:
-        """Refresh every cache block that may have been changed by a write."""
-        key = self._write_key(request)
-        if key is None:
-            return False
-        if invalidated is None:
-            with self._lock:
-                invalidated = self.cache.invalidate_overlapping(key)
-            self._emit(
-                "cache_invalidated_after_write",
-                role="INFO",
-                client=client,
-                source=source,
-                function=key.function,
-                start=key.start,
-                count=key.count,
-                blocks=len(invalidated),
-            )
-        if invalidated:
-            readback_keys = invalidated
-        else:
-            readback_keys = tuple(
-                policy.key
-                for policy in self.policies
-                if policy.key.function == key.function
-                and policy.key.start < key.end
-                and key.start < policy.key.end
-            ) or (key,)
-        all_succeeded = True
-        successful_keys: list[RegisterKey] = []
-        failed_keys: list[RegisterKey] = []
-        for readback_key in readback_keys:
-            error: str | None = None
-            try:
-                _, error = self._read_words(
-                    readback_key,
-                    client=f"{client}:READBACK",
-                    source=source,
-                    now=time.monotonic(),
-                    force_refresh=True,
-                    allow_during_write=True,
-                )
-            except PhysicalModbusException as exc:
-                error = str(exc)
-            all_succeeded = all_succeeded and error is None
-            (successful_keys if error is None else failed_keys).append(readback_key)
-            self._emit(
-                "write_readback",
-                role="INFO" if error is None else "WARN",
-                client=client,
-                source=source,
-                function=key.function,
-                start=key.start,
-                count=key.count,
-                readback_function=readback_key.function,
-                readback_start=readback_key.start,
-                readback_count=readback_key.count,
-                success=error is None,
-                error=error,
-                generation=self.cache.latest_generation,
-            )
-        self._schedule_refresh_after_write(successful_keys, immediate=False)
-        self._schedule_refresh_after_write(failed_keys, immediate=True)
-        return all_succeeded
-
     def _schedule_refresh_after_write(
         self, keys: Iterable[RegisterKey], *, immediate: bool
     ) -> None:
@@ -1706,9 +1634,7 @@ class CacheGatewayService:
                 for offset in range(7, 7 + key.count * 2, 2)
             )
         )
-        invalidated = self._invalidate_before_write(
-            key, client=client, source=source
-        )
+        self._invalidate_before_write(key, client=client, source=source)
         self._acquire_write_slot(source)
         try:
             started = time.monotonic()
@@ -1783,41 +1709,9 @@ class CacheGatewayService:
                 physical_success = True
 
             if physical_success:
-                if source == "SHINE":
-                    self._emit(
-                        "tcp_write_acknowledged",
-                        role="INFO",
-                        client=client,
-                        source=source,
-                        function=request[1],
-                        start=key.start,
-                        count=key.count,
-                        values=values,
-                        physical_success=True,
-                        cache_refresh_pending=True,
-                        duration_ms=round((time.monotonic() - started) * 1000, 3),
-                        generation=self.cache.latest_generation,
-                    )
-                    return GatewayResult(
-                        "served",
-                        client,
-                        response=client_response,
-                        reason="physical_write_acknowledged",
-                    )
-                readback_ok = self._post_write(
-                    request,
-                    client=client,
-                    source=source,
-                    invalidated=invalidated,
-                )
-                write_reason = (
-                    "physical_write_readback_confirmed"
-                    if readback_ok
-                    else "physical_write_readback_failed"
-                )
                 self._emit(
-                    "tcp_write_complete",
-                    role="INFO" if readback_ok else "WARN",
+                    "tcp_write_acknowledged",
+                    role="INFO",
                     client=client,
                     source=source,
                     function=request[1],
@@ -1825,7 +1719,7 @@ class CacheGatewayService:
                     count=key.count,
                     values=values,
                     physical_success=True,
-                    readback_success=readback_ok,
+                    cache_refresh_pending=True,
                     duration_ms=round((time.monotonic() - started) * 1000, 3),
                     generation=self.cache.latest_generation,
                 )
@@ -1833,14 +1727,8 @@ class CacheGatewayService:
                     "served",
                     client,
                     response=client_response,
-                    reason=write_reason,
+                    reason="physical_write_acknowledged",
                 )
-            self._post_write(
-                request,
-                client=client,
-                source=source,
-                invalidated=invalidated,
-            )
             return GatewayResult(
                 "failed", client, response=client_response, reason=write_reason
             )
@@ -2301,6 +2189,7 @@ class ShineEndpoint(threading.Thread):
                         client="SHINE",
                         source="SHINE",
                         standard_modbus=standard_request,
+                        is_write=is_write,
                     )
                     if self.events:
                         self.events.emit(
