@@ -2,7 +2,7 @@
 
 PiITM is the Growatt Pi in the Middle: a Raspberry Pi service that owns one
 physical inverter RS-485 connection and safely shares it between Home
-Assistant, Shine, development clients, and bounded forensic tools.
+Assistant, Shine, and development clients.
 
 The repository is a transport, observability, simulator, and deployment
 project. It is not the Home Assistant integration and it is not the authority
@@ -13,33 +13,32 @@ for register names or inverter semantics.
 ### Implemented
 
 - one queued physical RTU owner for all client sources;
-- legacy, cache, cache-plus-Shine, and raw-transparent runtime profiles;
+- legacy, cache, cache-plus-Shine, and cache-plus-Shine-direct runtime profiles;
 - Modbus TCP production/development listeners and JSONL sniff output;
 - CRC/framing validation, response association, and Modbus exception
   propagation;
 - native FC03/FC04 block cache with explicit freshness;
 - FC06/FC10 cache invalidation plus complete-block read-after-write before a
   coherent write result is returned;
-- Shine cadence observation and predictive native-block prefetch in the
-  opt-in predictive profile;
+- Shine request observation for diagnostics and setup learning;
+- opportunistic read-only cache polling based on block age (four-second target);
 - explicit installation JSON configurations for the poll plan, transport,
   inverter, and logger combination;
 - live mode with an approved installation plan and setup mode that observes
   Shine/TCP traffic, adapts the in-memory plan, and exports a candidate;
 - standalone package installation, simulator fixtures, tests, Black/Ruff
   checks, and CI workflow;
-- bounded ShineWiLan-X2 raw bridge evidence on the live Raspberry Pi;
 - a read-only candidate canary built on the RPi, read on ports 5020/5021, and
   rolled back to the known-good container (see the acceptance record).
-- a learned current-firmware X2 profile with twenty observed FC03/FC04/FC20
-  blocks (nineteen configured after removing one covered subset) is live on
-  the RPi; all three write paths are enabled and monitored with read-after-
+- a learned current-firmware X2 profile with the observed FC03/FC04 native
+  blocks (the covered subset is omitted) is live on the RPi; FC20 is on-demand
+  only and all three write paths are enabled and monitored with read-after-
   write evidence.
 
 ### Known limits
 
-- FC20 is transported as an opaque request/response primitive. Its words do
-  not have a universal semantic map in this repository;
+- FC20 is forwarded as an ordinary on-demand Modbus frame. Its words do not
+  have a universal semantic map in this repository;
 - VPP registers, discovery payloads, H188/H209, asynchronous frames, and
   device-family differences remain evidence-gated;
 - physical timeout and retry behavior still needs acceptance testing for each
@@ -67,8 +66,6 @@ for register names or inverter semantics.
 
 - document stable `/dev/serial/by-path` selection for identical CH340
   adapters;
-- keep normal cache-plus-Shine and raw-transparent forensic profiles
-  separate;
 - record the exact command, image digest, timing, ports, and evidence path for
   every live hardware test;
 - keep a known-good image and command available before changing a live Pi;
@@ -90,8 +87,8 @@ for register names or inverter semantics.
 
 - add explicit metrics for queue delay, physical transaction latency,
   cache age, stale blocks, retries, and write-readback failures;
-- make background polling intervals visible and separate from the minimum
-  inter-transaction spacing;
+- make cache age, retry delay, and stale-block alarms visible;
+- keep FC20 on-demand; it is not part of the cache poll plan;
 - test concurrent HA, Shine, and development reads under timeout and
   re-enumeration conditions;
 - test write/readback clamping, rejected writes, and a failed readback without

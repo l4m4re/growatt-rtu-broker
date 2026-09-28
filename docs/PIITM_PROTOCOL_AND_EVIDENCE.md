@@ -30,16 +30,14 @@ reference profile is:
 ```text
 inverter: 115200 8N1, stable /dev/serial/by-path alias
 Shine X2: 115200 8N1, stable /dev/serial/by-path alias
-minimum physical transaction period: 0.5 s
-RTU timeout: 8 s
-FC20 timeout: 6 s
-Shine burst: 8
+minimum physical transaction period: none; the single-owner queue still serializes transactions
+RTU timeout: 0.9 s for standard FC03/FC04 reads
 TCP: 5020 production, 5021 development, 5700 JSONL sniff stream
-mode: cache+shine-predictive
+mode: cache+shine
 ```
 
-The poll blocks and write permissions are selected by one installation JSON
-configuration. The old ShineWiFi-X/old-firmware plan and the current X2
+The native FC03/FC04 block identities and write permissions are selected by one installation JSON
+configuration. Refresh timing is broker policy: the read-only cache poller selects the oldest block at a four-second target age. FC20 is on-demand only. The old ShineWiFi-X/old-firmware plan and the current X2
 candidate are kept under [`configs/examples/`](../configs/examples/). A setup
 run can observe unknown standard blocks and export a candidate, but promotion
 to live mode remains a human review and canary step.
@@ -57,7 +55,7 @@ for parser and replay tests. They are not a universal register map:
 | --- | --- | --- |
 | `01 03 00 00 00 7d 85 eb` | `PROVEN_LIVE` | FC03 request for one observed native holding block. The block's device-specific semantics belong to the register authority. |
 | `01 04 0b b8 00 7d b2 2a` | `PROVEN_LIVE` | FC04 request for one observed native input block. |
-| `01 20 00 00 00 64 81 e6` | `PROVEN_LIVE` | Opaque FC20 request for 100 words. The broker preserves and schedules it; this project does not assign universal word semantics. |
+| `01 20 00 00 00 64 81 e6` | `PROVEN_LIVE` | FC20 request for 100 words. The broker forwards it on demand; this project does not assign universal word semantics. |
 | `01 20 00 03 00 2b f5 d3` | `REPLAYED` | Discovery-related FC20 request found in the historical capture set. Treat the payload and response as device-specific evidence. |
 
 The broker validates framing and CRC, associates responses with queued
@@ -71,16 +69,10 @@ reporting coherent success.
 - The old ShineWiFi-X observations are historical and remain in
   [`archive/HA-DEV-2C_SHINE_TRANSPORT.md`](archive/HA-DEV-2C_SHINE_TRANSPORT.md)
   and the related 2D/3B reports.
-- The new ShineWiLan-X2 raw-transparent bridge test on 2026-09-25 forwarded
-  valid traffic for more than ten minutes without timeout, CRC, exception, or
-  serial-reopen events. The portal recovered after a Shine reset. The raw
-  capture is retained on the RPi under
-  `/share/growatt-broker-shine-x2-raw-20260925/`, not in this repository.
-- The X2 result proves a useful byte-bridge boundary. It does not prove that
+- The ShineWiLan-X2 observations from 2026-09-25 are retained as historical
+  evidence outside the normal runtime configuration. They do not prove that
   every cache profile, inverter model, or firmware version has identical
   timing.
-- The raw profile has no TCP endpoint and must be the only serial owner during
-  a capture. See [SHINE_FIRMWARE_FORENSICS.md](SHINE_FIRMWARE_FORENSICS.md).
 
 The current reports do not prove the semantic identity of FC20 words, H188,
 H209, VPP registers, asynchronous frames, or discovery values across inverter
@@ -95,8 +87,6 @@ analysis tools can regenerate summaries from a capture supplied outside the
 repository:
 
 ```bash
-python tools/analyze_raw_wire.py --help
-python tools/analyze_forensic_rx.py --help
 python tools/compact_capture.py --help
 ```
 

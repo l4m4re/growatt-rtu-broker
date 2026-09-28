@@ -17,7 +17,7 @@ from growatt_broker.configuration import load_installation_config
 OLD_POLICIES = load_installation_config(
     __file__.replace(
         "tests/test_tcp_read_path.py",
-        "configs/examples/growatt-min6000tl-xh-shinewifi-x-old.json",
+        "configs/examples/growatt-min6000tl-xh-shinewifi-x.json",
     )
 ).policies()
 

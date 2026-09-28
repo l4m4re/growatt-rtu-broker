@@ -45,7 +45,7 @@ updated symlink target and reopen the newly enumerated tty. This uses
 an equivalent udev-aware host supervisor with a narrower device policy is
 preferable where available.
 
-The 2026-09-25 live reference uses `cache+shine-predictive` with the X2 path.
+The 2026-09-25 live reference uses `cache+shine` with the X2 path.
 `legacy` remains the rollback profile and cache modes are still explicit:
 
 ```text

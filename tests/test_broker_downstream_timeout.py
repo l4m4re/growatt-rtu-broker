@@ -55,8 +55,6 @@ async def test_downstream_timeout_logged(tmp_path):
                 "8N1",
                 "--tcp",
                 f"127.0.0.1:{tcp_port}",
-                "--min-period",
-                "0.05",
                 "--rtimeout",
                 "0.2",
                 "--log",

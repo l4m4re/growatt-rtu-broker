@@ -17,7 +17,7 @@ from growatt_broker.configuration import load_installation_config
 OLD_CONFIG = load_installation_config(
     __file__.replace(
         "tests/test_broker_writes.py",
-        "configs/examples/growatt-min6000tl-xh-shinewifi-x-old.json",
+        "configs/examples/growatt-min6000tl-xh-shinewifi-x.json",
     )
 )
 
@@ -88,7 +88,7 @@ def test_write_readback_rearms_affected_block_after_refresh() -> None:
 
     gateway.handle_write_request(request, client="TCP:dev", source="DEV_TCP")
 
-    assert gateway._next_due[key] > time.monotonic()
+    assert gateway._next_due[key] <= time.monotonic()
 
 
 def test_write_invalidates_cache_before_physical_transaction() -> None:
@@ -161,6 +161,22 @@ def test_write_policy_can_disable_each_tcp_source() -> None:
         assert result.reason == "write_denied"
         assert result.response == add_crc(bytes.fromhex("018602"))
         assert downstream.requests == []
+
+
+def test_write_policy_can_disable_shine_source() -> None:
+    request = add_crc(bytes.fromhex("010600c80001"))
+    downstream = WriteDownstream()
+    gateway = _gateway(
+        downstream,
+        write_policy=WritePolicy(shine_enabled=False),
+    )
+
+    result = gateway.handle_request(request, client="SHINE", source="SHINE")
+
+    assert result.status == "failed"
+    assert result.reason == "write_denied"
+    assert result.response == add_crc(bytes.fromhex("018602"))
+    assert downstream.requests == []
 
 
 def test_write_timeout_returns_gateway_exception_without_fake_success() -> None:
@@ -408,33 +424,6 @@ def test_tcp_server_propagates_physical_write_response() -> None:
         server.sock.close()
 
 
-def test_fc20_failed_refresh_keeps_bounded_stale_object() -> None:
-    request = bytes.fromhex("01200000006481e6")
-    response = add_crc(bytes([1, 0x20, 200]) + bytes(range(200)))
-
-    class FC20Downstream(WriteDownstream):
-        calls = 0
-
-        def transact(self, request: bytes, **kwargs: object) -> bytes:
-            self.calls += 1
-            self.requests.append(request)
-            if self.calls > 1:
-                return b""
-            self.kwargs.append(kwargs)
-            return response
-
-    downstream = FC20Downstream()
-    gateway = _gateway(downstream)
-    first = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=0.0)
-    stale = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=20.0)
-    expired = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=301.0)
-
-    assert first.reason == "fc20_fresh"
-    assert stale.reason == "fc20_stale_fallback"
-    assert stale.response == response
-    assert expired.status == "failed"
-    assert len(downstream.requests) == 3
-
 
 def test_read_waits_while_write_and_readback_are_unresolved() -> None:
     request = add_crc(bytes.fromhex("010600bc0001"))
@@ -484,15 +473,13 @@ def test_read_waits_while_write_and_readback_are_unresolved() -> None:
     assert read_result[0].status == "served"
 
 
-def test_autonomous_plan_prioritizes_fast_pages_and_exposes_ems_age() -> None:
+def test_installation_plan_uses_identity_only_and_broker_age_target() -> None:
     plan = OLD_CONFIG.policies()
-    fast = {policy.name: policy for policy in plan}
 
-    assert fast["input_3000"].interval <= 10
-    assert fast["input_3125"].interval <= 10
-    assert fast["input_3000"].max_age <= 15
-    assert fast["input_3125"].max_age <= 15
-    assert fast["holding_0"].priority > fast["input_3000"].priority
+    assert {policy.interval for policy in plan} == {60.0}
+    assert {policy.max_age for policy in plan} == {180.0}
+    assert {policy.priority for policy in plan} == {5}
+
 
 
 def test_autonomous_poller_refreshes_without_client_requests() -> None:

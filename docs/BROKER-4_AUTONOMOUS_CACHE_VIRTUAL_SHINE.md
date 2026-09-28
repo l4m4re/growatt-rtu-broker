@@ -126,8 +126,8 @@ request to the inverter; there is no register allowlist. `PROD_TCP` and
 `--dev-tcp-writes disabled`. The compose and `docker/run_broker.sh` paths expose
 the same settings. This is transport capability, not a declaration that every
 address is semantically or live write-verified in the canonical register
-specification. The transparent Shine path remains able to forward its own
-writes, with source tagging and shared serialization.
+specification. The shared client path forwards Shine writes with source tagging
+and shared serialization.
 
 ## Offline validation
 

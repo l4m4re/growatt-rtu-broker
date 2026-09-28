@@ -173,10 +173,10 @@ def test_fc10_same_length_wrong_start_or_quantity_is_rejected() -> None:
     assert find_standard_response(wrong_quantity, req) is None
 
 
-def test_nonstandard_request_has_no_deterministic_spec() -> None:
+def test_fc20_request_has_deterministic_response_spec() -> None:
     req = add_crc(bytes.fromhex("012000000001"))
 
-    assert standard_response_spec(req) is None
+    assert standard_response_spec(req) == (1, 0x20, 7)
 
 
 @pytest.mark.parametrize("function", [0x03, 0x04])
@@ -191,9 +191,9 @@ def test_writes_and_nonstandard_requests_are_not_retryable(function: int) -> Non
     assert not is_retryable_standard_read(req)
 
 
-def test_nonstandard_request_uses_existing_generic_reader() -> None:
+def test_fc20_request_uses_standard_reader() -> None:
     req = add_crc(bytes.fromhex("012000000001"))
-    response = add_crc(bytes.fromhex("012002"))
+    response = add_crc(bytes.fromhex("0120020001"))
     serial = FakeSerial()
     serial.feed(response)
     framer = RTUFramer(serial, char_time=0.001)
@@ -238,7 +238,7 @@ def test_matching_reader_reports_multiple_frames_from_one_serial_read() -> None:
     assert discarded == [async_one, async_two]
 
 
-def test_fc20_reader_does_not_parse_crc_collision_inside_opaque_payload() -> None:
+def test_standard_reader_does_not_parse_crc_collision_inside_payload() -> None:
     request_frame = add_crc(bytes.fromhex("012000000064"))
     payload = bytearray(range(200))
     payload[2:10] = add_crc(bytes.fromhex("008c00090400"))
@@ -248,7 +248,7 @@ def test_fc20_reader_does_not_parse_crc_collision_inside_opaque_payload() -> Non
     framer = RTUFramer(serial, char_time=0.001)
     observed: list[bytes] = []
 
-    result = framer.read_fc20_frame(
+    result = framer.read_standard_frame(
         request_frame,
         timeout=0.2,
         on_unmatched=observed.append,
@@ -258,7 +258,7 @@ def test_fc20_reader_does_not_parse_crc_collision_inside_opaque_payload() -> Non
     assert observed == []
 
 
-def test_fc20_reader_reports_multiple_async_frames_before_response() -> None:
+def test_standard_reader_reports_multiple_async_frames_before_response() -> None:
     request_frame = add_crc(bytes.fromhex("012000000064"))
     async_one = add_crc(bytes.fromhex("00090100"))
     async_two = add_crc(bytes.fromhex("00070100"))
@@ -268,7 +268,7 @@ def test_fc20_reader_reports_multiple_async_frames_before_response() -> None:
     framer = RTUFramer(serial, char_time=0.001)
     observed: list[bytes] = []
 
-    result = framer.read_fc20_frame(
+    result = framer.read_standard_frame(
         request_frame,
         timeout=0.2,
         on_unmatched=observed.append,
@@ -278,14 +278,14 @@ def test_fc20_reader_reports_multiple_async_frames_before_response() -> None:
     assert observed == [async_one, async_two]
 
 
-def test_fc20_reader_accepts_exception_response() -> None:
+def test_standard_reader_accepts_exception_response() -> None:
     request_frame = add_crc(bytes.fromhex("012000000064"))
     expected = add_crc(bytes.fromhex("01a002"))
     serial = FakeSerial()
     serial.feed(expected)
     framer = RTUFramer(serial, char_time=0.001)
 
-    assert framer.read_fc20_frame(request_frame, timeout=0.2) == expected
+    assert framer.read_standard_frame(request_frame, timeout=0.2) == expected
 
 
 def test_matching_reader_honors_deadline_during_continuous_input() -> None:

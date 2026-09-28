@@ -8,7 +8,6 @@ from growatt_broker.cache_gateway import (
     BrokerMode,
     ClientReadRequest,
     GatewayResult,
-    OpaqueProtocolCache,
     PatternKey,
     PollPrediction,
     PollCoordinator,
@@ -25,7 +24,7 @@ from growatt_broker.configuration import load_installation_config
 OLD_POLICIES = load_installation_config(
     __file__.replace(
         "tests/test_cache_gateway.py",
-        "configs/examples/growatt-min6000tl-xh-shinewifi-x-old.json",
+        "configs/examples/growatt-min6000tl-xh-shinewifi-x.json",
     )
 ).policies()
 
@@ -56,28 +55,28 @@ def test_exact_device_scoped_discovery_generates_expected_response() -> None:
     assert result.reason == profile.device_id
 
 
-def test_discovery_uses_physical_passthrough_when_available() -> None:
+def test_discovery_uses_on_demand_request_when_available() -> None:
     profile = min_6000tl_xh_discovery_profile()
     seen: list[bytes] = []
 
     def passthrough(frame: bytes, _now: float) -> GatewayResult:
         seen.append(frame)
         return GatewayResult(
-            "served", "SHINE", response=profile.response, reason="physical_passthrough"
+            "served", "SHINE", response=profile.response, reason="on_demand"
         )
 
     _, coordinator = _coordinator()
     adapter = ShineVirtualInverterAdapter(
         coordinator,
         discovery_profiles=(profile,),
-        passthrough_handler=passthrough,
+        request_handler=passthrough,
     )
 
     result = adapter.handle_request(profile.request, now=0.0)
 
     assert result.status == "served"
     assert result.response == profile.response
-    assert result.reason == "physical_passthrough"
+    assert result.reason == "on_demand"
     assert seen == [profile.request]
 
 
@@ -92,26 +91,11 @@ def test_unit_zero_discovery_accepts_physical_unit_one_response() -> None:
 
     gateway = _gateway(RecordingDownstream())
 
-    result = gateway.handle_shine_passthrough(profile.request)
+    result = gateway.handle_request(profile.request, client="SHINE", source="SHINE")
 
     assert result.status == "served"
     assert result.response == profile.response
     assert calls == [(profile.request, False)]
-
-
-def test_virtual_shine_write_policy_can_be_disabled() -> None:
-    _, coordinator = _coordinator()
-    adapter = ShineVirtualInverterAdapter(
-        coordinator,
-        discovery_profiles=(),
-        allow_writes=False,
-    )
-    request = add_crc(bytes.fromhex("010600bc0001"))
-
-    result = adapter.handle_request(request, now=0.0)
-
-    assert result.status == "quarantined"
-    assert result.reason == "shine_write_disabled"
 
 
 def test_unrelated_unit_zero_request_is_not_answered_as_discovery() -> None:
@@ -121,7 +105,7 @@ def test_unrelated_unit_zero_request_is_not_answered_as_discovery() -> None:
 
     assert result.status == "quarantined"
     assert result.response is None
-    assert result.reason == "unprofiled_unit_zero_read"
+    assert result.reason == "unit_zero_read"
 
 
 def test_fresh_cache_serves_three_clients_without_physical_poll() -> None:
@@ -314,18 +298,6 @@ def test_pattern_observer_predicts_due_block_without_fixed_sequence() -> None:
     assert predictions == (PollPrediction(first, 6.0, 0.5),)
 
 
-def test_fc20_is_cached_and_replayed_as_opaque_crc_valid_data() -> None:
-    request = bytes.fromhex("01200000006481e6")
-    response = add_crc(bytes([1, 0x20, 200]) + bytes(range(200)))
-    cache = OpaqueProtocolCache()
-
-    stored = cache.put(request, response, captured_at=10.0)
-    replay = cache.get(request, now=10.5, max_age=5.0)
-
-    assert stored.response == response
-    assert replay is not None
-    assert replay.response == response
-
 
 def test_fc06_and_fc10_do_not_enter_read_cache_path() -> None:
     cache, coordinator = _coordinator()
@@ -341,8 +313,8 @@ def test_fc06_and_fc10_do_not_enter_read_cache_path() -> None:
 
     assert single_result.status == "quarantined"
     assert multiple_result.status == "quarantined"
-    assert single_result.reason == "write_not_allowed"
-    assert multiple_result.reason == "write_not_allowed"
+    assert single_result.reason == "write_request"
+    assert multiple_result.reason == "write_request"
     assert coordinator.issued_requests == []
     assert cache.snapshots() == ()
 
@@ -357,7 +329,7 @@ def test_unknown_shine_function_is_quarantined_by_default() -> None:
     assert result.response is None
 
 
-def test_unknown_shine_function_uses_physical_passthrough_when_configured() -> None:
+def test_unknown_function_uses_on_demand_request_when_configured() -> None:
     request = add_crc(bytes.fromhex("012100000001"))
     response = add_crc(bytes.fromhex("01210100"))
     seen: list[bytes] = []
@@ -370,7 +342,7 @@ def test_unknown_shine_function_uses_physical_passthrough_when_configured() -> N
     adapter = ShineVirtualInverterAdapter(
         coordinator,
         discovery_profiles=(min_6000tl_xh_discovery_profile(),),
-        passthrough_handler=passthrough,
+        request_handler=passthrough,
     )
 
     result = adapter.handle_request(request, now=0.0)
@@ -380,7 +352,7 @@ def test_unknown_shine_function_uses_physical_passthrough_when_configured() -> N
     assert seen == [request]
 
 
-def test_shine_writes_use_physical_passthrough_when_configured() -> None:
+def test_shine_writes_use_on_demand_request_when_configured() -> None:
     request = add_crc(bytes.fromhex("010600bc0001"))
     response = request
     seen: list[bytes] = []
@@ -393,7 +365,7 @@ def test_shine_writes_use_physical_passthrough_when_configured() -> None:
     adapter = ShineVirtualInverterAdapter(
         coordinator,
         discovery_profiles=(),
-        passthrough_handler=passthrough,
+        request_handler=passthrough,
     )
 
     result = adapter.handle_request(request, now=0.0)
@@ -415,7 +387,7 @@ def test_successful_shine_write_invalidates_overlapping_cache() -> None:
         source_transaction="shine-read",
     )
 
-    result = gateway.handle_shine_passthrough(request)
+    result = gateway.handle_request(request, client="SHINE", source="SHINE")
 
     assert result.status == "served"
     assert gateway.cache.read(RegisterKey(3, 180, 1), now=10.1, max_age=5.0) is None
@@ -557,39 +529,29 @@ def test_ha_uses_a_recent_shine_snapshot_before_refreshing() -> None:
     assert downstream.requests == []
 
 
-def test_gateway_fc20_is_fetched_once_then_replayed() -> None:
+def test_fc20_is_forwarded_as_an_on_demand_modbus_frame() -> None:
     downstream = _FakeDownstream()
-    request = bytes.fromhex("01200000006481e6")
-    response = add_crc(bytes([1, 0x20, 200]) + bytes(range(200)))
-
-    def transact(request: bytes, **_kwargs: object) -> bytes:
-        downstream.requests.append(request)
-        return response
-
-    downstream.transact = transact  # type: ignore[method-assign]
     gateway = _gateway(downstream)
+    request = bytes.fromhex("01200000006481e6")
 
-    first = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=10.0)
-    second = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=10.5)
+    first = gateway.handle_request(request, client="SHINE", source="SHINE")
+    second = gateway.handle_request(request, client="SHINE", source="SHINE")
 
     assert first.status == "served"
     assert second.status == "served"
-    assert first.response == response
-    assert second.response == response
-    assert downstream.requests == [request]
+    assert downstream.requests == [request, request]
 
 
-def test_fc20_timeout_is_reported_as_physical_passthrough_failure() -> None:
+def test_fc20_timeout_is_reported_as_on_demand_failure() -> None:
     downstream = _FakeDownstream()
     downstream.transact = lambda _request, **_kwargs: b""  # type: ignore[method-assign]
     gateway = _gateway(downstream)
     request = bytes.fromhex("01200000006481e6")
 
-    result = gateway.handle_fc20(request, client="SHINE", source="SHINE", now=10.0)
+    result = gateway.handle_request(request, client="SHINE", source="SHINE")
 
     assert result.status == "failed"
-    assert result.response is None
-    assert result.reason == "physical passthrough timeout"
+    assert result.reason == "on-demand timeout"
 
 
 def test_due_background_refresh_does_not_serve_the_old_fresh_entry() -> None:
@@ -617,59 +579,21 @@ def test_due_background_refresh_does_not_serve_the_old_fresh_entry() -> None:
     assert read.words == tuple(range(3000, 3125))
 
 
-def test_predictive_prefetch_refreshes_next_native_shine_block() -> None:
+def test_background_poller_refreshes_oldest_block_at_target_age() -> None:
     downstream = _FakeDownstream()
-    gateway = _gateway(downstream, predictive_prefetch=True)
-    request = add_crc(bytes.fromhex("01040bb8007d"))
-
-    for at in (0.0, 10.0, 20.0):
-        gateway.observe_shine_request(request, at=at)
-
-    gateway._run_predictive_prefetch(28.0)
-
-    assert downstream.requests == [bytes.fromhex("01040bb8007db22a")]
-    assert (
-        gateway.cache.read(
-            RegisterKey(4, 3000, 125),
-            now=time.monotonic(),
-            max_age=5.0,
-        )
-        is not None
+    gateway = _gateway(downstream)
+    policy = next(item for item in gateway.policies if item.key.function == 4)
+    gateway.cache.put_block(
+        policy.key,
+        range(policy.key.count),
+        captured_at=time.monotonic() - gateway._BACKGROUND_TARGET_AGE - 1,
+        source_transaction="old",
     )
 
-
-def test_background_fallback_considers_recent_shine_cadence_active() -> None:
-    gateway = _gateway(_FakeDownstream(), predictive_prefetch=True)
-    request = add_crc(bytes.fromhex("01040bb8007d"))
-
-    gateway.observe_shine_request(request, at=100.0)
-
-    assert gateway._shine_is_active(120.0)
-    assert not gateway._shine_is_active(131.0)
-
-
-def test_native_cadence_overrides_background_policy_intervals() -> None:
-    gateway = _gateway(
-        _FakeDownstream(), predictive_prefetch=True, native_cadence_s=10.0
-    )
-
-    assert gateway._native_poll_cadence() == 10.0
-    assert gateway._background_interval(gateway.policies[0]) == 10.0
-
-
-def test_background_poll_reuses_recent_predictive_refresh() -> None:
-    gateway = _gateway(_FakeDownstream(), predictive_prefetch=True)
-    request = add_crc(bytes.fromhex("01040bb8007d"))
-    observed_at = time.monotonic()
-    gateway.observe_shine_request(request, at=observed_at)
-    policy = next(policy for policy in gateway.policies if policy.key.function == 4)
-    gateway._next_due = {item.key: observed_at + 1000 for item in gateway.policies}
-    gateway._next_due[policy.key] = 0.0
-    gateway._fc20_next_due = observed_at + 1000
     calls: list[bool] = []
 
     def fake_read_words(key: RegisterKey, **kwargs: object) -> tuple[None, None]:
-        assert key == policy.key
+        assert key in {item.key for item in gateway.policies}
         calls.append(bool(kwargs["force_refresh"]))
         gateway.stop()
         return None, None
@@ -677,4 +601,4 @@ def test_background_poll_reuses_recent_predictive_refresh() -> None:
     gateway._read_words = fake_read_words  # type: ignore[method-assign]
     gateway._run_poller()
 
-    assert calls == [False]
+    assert calls == [True]

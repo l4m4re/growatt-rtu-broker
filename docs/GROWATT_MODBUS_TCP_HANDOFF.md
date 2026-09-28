@@ -18,12 +18,12 @@ Shine serial           ┘
 The cache gateway stores coherent native FC03/FC04 blocks. Cache misses
 refresh a complete physical block. FC06/FC10 writes invalidate overlapping
 blocks and perform a paced complete-block readback before a coherent success is
-reported. Raw-transparent mode is a separate bounded byte bridge with no TCP
-endpoint.
+reported. The broker has one parsed Modbus path and does not expose a separate
+byte-bridge runtime.
 
-The live X2 reference profile uses 115200 8N1, a 0.5 second minimum physical
-transaction period, an 8 second RTU timeout, a 6 second FC20 timeout, and an
-eight-transaction Shine burst. Both adapters are CH340-class; the X2 uses a
+The live X2 reference profile uses 115200 8N1, no artificial inter-transaction
+delay, a single 0.9 second RTU timeout for all Modbus reads, including FC20. FC20 is
+forwarded on demand and is not cached or background-polled. Both adapters are CH340-class; the X2 uses a
 stable `/dev/serial/by-path` alias because it has no unique USB serial number.
 
 ## Reproducible release evidence

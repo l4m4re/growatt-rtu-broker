@@ -173,8 +173,6 @@ async def test_broker_tcp_roundtrip_with_serial_simulator(tmp_path):
                     "8N1",
                     "--tcp",
                     f"127.0.0.1:{tcp_port}",
-                    "--min-period",
-                    "0.05",
                     "--rtimeout",
                     "0.5",
                     "--log",

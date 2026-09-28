@@ -1,14 +1,14 @@
 # PiITM project instructions
 
 **Release preparation status (2026-09-25):** the PiITM public README, roadmap,
-live deployment guide, forensic runbook, evidence index, standalone test
-configuration, pinned lint/test dependencies, and CI workflow are now in
-place. Historical reports are under `docs/archive/`; generated logs and
-reverse-engineering dumps were removed from the release tree. The RPi Docker
-build, write-disabled read-only canary, rollback, and remote CI matrix are
-recorded in `docs/PIITM_LIVE_ACCEPTANCE_20260925.md`. Remaining gates are a
-separately reviewed git-history cleanup, release tag/image publication, and
-the final Growatt_ModbusTCP handoff.
+live deployment guide, evidence index, standalone test configuration, pinned
+lint/test dependencies, and CI workflow are now in place. Historical reports
+are under `docs/archive/`; generated logs and reverse-engineering dumps were
+removed from the release tree. The RPi Docker build, write-disabled canary,
+rollback, and remote CI matrix are recorded in
+`docs/PIITM_LIVE_ACCEPTANCE_20260925.md`. Remaining gates are a separately
+reviewed git-history cleanup, release tag/image publication, and the final
+Growatt_ModbusTCP handoff.
 
 This repository is the **Growatt Pi in the Middle (PiITM)** project. The
 Raspberry Pi owns the physical inverter serial connection and mediates access
@@ -36,10 +36,8 @@ The implemented broker modes are:
 | `cache` | One physical inverter owner plus shared native FC03/FC04 cache; no Shine client is required. |
 | `cache+shine` | Shared cache and virtual Shine path. |
 | `cache+shine-direct` | Shared broker scheduling with direct Shine forwarding. |
-| `cache+shine-predictive` | Shared cache, observed Shine cadence, background native-block prefetch, and virtual Shine reads. |
-| `legacy --shine-policy raw-transparent` | Diagnostic byte bridge only. It forwards serial bytes in both directions, disables Modbus TCP, and must never run concurrently with another owner of the serial ports. |
 
-The cache is a register-block cache, not a duplicate TCP response cache. FC06
+The cache is a register-block cache, not a duplicate TCP response cache. Installation examples store only function, start register, count, and name; refresh timing is broker policy. FC20 is on-demand only. FC06
 and FC10 writes are policy-controlled physical transactions. The current write
 path invalidates overlapping blocks before the write, performs complete-block
 readback after a successful acknowledgement, and reports readback failure
@@ -50,13 +48,10 @@ tests introduced in commit `5853fa0` and included in the
 The deployed PiITM reference profile on 2026-09-25 used:
 
 ```text
-mode:             cache+shine-predictive
+mode:             cache+shine
 inverter format:  115200 8N1
 shine format:     115200 8N1
-min-period:       0.5 s
-RTU timeout:      8 s
-FC20 timeout:     6 s
-shine burst:      8
+RTU timeout:      0.9 s for standard FC03/FC04 reads
 production TCP:   0.0.0.0:5020
 development TCP:  0.0.0.0:5021
 sniff stream:     0.0.0.0:5700
@@ -93,21 +88,19 @@ true when the code is reorganized:
 
 1. There is one physical RTU owner. HA, Shine, development TCP, and background
    polling are queued through the same downstream scheduler.
-2. A configured minimum inter-transaction period is applied to every physical
-   request. Background polling intervals are separate from this transport
-   spacing and must be documented separately.
+2. Physical requests are serialized by one downstream owner. Writes are
+   ordered live RPi, development HA, then Shine; uncached reads follow writes;
+   background polling is read-only and lowest priority.
 3. Modbus framing, CRC validation, response association, and exception
    propagation are observable in structured JSONL logs.
 4. A read cache may answer only from a coherent native block with an explicit
    freshness policy. A cache miss refreshes the complete native block.
 5. A physical write is never represented as a normal cache read. Its
    acknowledgement, invalidation, readback, and failure state are logged.
-6. Raw-transparent mode is a bounded forensic tool. It has no TCP command
-   endpoint and must be the only serial owner for its test window.
-7. Captures distinguish evidence from interpretation. Use these labels in
+6. Captures distinguish evidence from interpretation. Use these labels in
    reports: `PROVEN_LIVE`, `REPLAYED`, `STATIC_ANALYSIS`, `VENDOR_REFERENCE`,
    `HYPOTHESIS`, and `NOT_TESTED`.
-8. PiITM does not become the register-map authority. Register names, scaling,
+7. PiITM does not become the register-map authority. Register names, scaling,
    access flags, and device-family claims belong in Growatt inverter info or
    Growatt_ModbusTCP and are linked from evidence reports.
 
@@ -122,10 +115,9 @@ documentation file.
 
 | File | Finding and required action |
 | --- | --- |
-| `README.md` | Keep as the entry point, but rewrite around PiITM. Remove the unimplemented Modbus Workbench promises from the quick-start path, fix the `growatt-broker run/capture` examples (the console entry point is the live broker), document the actual mode table, X2 by-path rule, raw forensic boundary, and rollback. |
+| `README.md` | Keep as the entry point, but rewrite around PiITM. Remove the unimplemented Modbus Workbench promises from the quick-start path, fix the `growatt-broker run/capture` examples (the console entry point is the live broker), document the actual mode table, X2 by-path rule, and rollback. |
 | `docs/ROADMAP.md` | Replace the old broad Workbench roadmap with the PiITM roadmap. Mark write-through cache coherence as implemented where the current tests prove it, and track remaining physical timeout, FC20 semantics, device-family, and release work separately. |
-| `docs/ha_live_setup.md` | Make this the generic deployment guide. Remove private IPs, old Exar/X serial paths, stale `min-period=1`/timeout examples, and claims about the old logger. Add X2 by-path selection, host `/dev` visibility, the Docker namespace capture rule, normal and forensic profiles, and rollback. |
-| `docs/SHINE_FIRMWARE_FORENSICS.md` | Retain as the forensic runbook, but update it for ShineWiLan-X2, the current image/tag, persistent `/share` captures, and the exact no-TCP safety boundary. |
+| `docs/ha_live_setup.md` | Make this the generic deployment guide. Remove private IPs, old Exar/X serial paths, stale `min-period=1`/timeout examples, and claims about the old logger. Add X2 by-path selection, host `/dev` visibility, normal cache profiles, and rollback. |
 | `docs/SIMULATOR.md` | Keep after verifying the command and dataset paths in an isolated broker environment. State clearly that the simulator is a PiITM test fixture and not a Home Assistant runtime dependency. |
 
 ### Keep as evidence, but mark as historical
@@ -221,8 +213,7 @@ Execute the following in separate reviewable commits:
 
 ### 2. Establish the public PiITM surface
 
-- Rewrite `README.md`, `docs/ROADMAP.md`, `docs/ha_live_setup.md`, and the
-  forensic runbook.
+- Rewrite `README.md`, `docs/ROADMAP.md`, and `docs/ha_live_setup.md`.
 - Add a short `docs/PIITM_PROTOCOL_AND_EVIDENCE.md` index linking to compact
   FC20/discovery/Shine evidence and to Growatt_ModbusTCP register work.
 - Move historical reports under `docs/archive/` without changing their
@@ -249,8 +240,8 @@ Execute the following in separate reviewable commits:
 ### 5. Validate the PiITM release candidate
 
 - Run simulator and unit tests from a clean checkout.
-- Build the Docker image and run CLI, raw-forensic, no-Shine, and
-  cache-plus-Shine smoke tests against virtual serial fixtures.
+- Build the Docker image and run CLI, no-Shine, and cache-plus-Shine smoke tests
+  against virtual serial fixtures.
 - Perform a bounded RPi read-only canary, verify Shine portal continuity, then
   test one write/readback transaction only under an explicit rollback plan.
 - Retain compact evidence and publish the image digest and release notes.

@@ -47,7 +47,7 @@ if [ -n "${SHINE_DEV:-}" ]; then
 fi
 
 case "${BROKER_MODE}" in
-  cache+shine|cache+shine-direct|cache+shine-predictive)
+  cache+shine|cache+shine-direct)
     if [ "${SHINE_CONFIGURED}" -ne 1 ]; then
       echo "Error: ${BROKER_MODE} requires SHINE_DEV"
       exit 2
@@ -123,9 +123,8 @@ DOCKER_CMD=(docker run -d "${DOCKER_ARGS[@]}" growatt-rtu-broker:local \
   growatt-broker --inverter "${INVERTER_ARG}" \
     --baud "${INV_BAUD:-${BAUD:-115200}}" --bytes "${INV_BYTES:-${BYTES:-8N1}}" \
     --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
-    --min-period "${MIN_PERIOD:-1.0}" --rtimeout "${RTIMEOUT:-1.5}" \
-    --fc20-timeout "${FC20_TIMEOUT:-3.0}" --shine-burst "${SHINE_BURST:-8}" \
-    --shine-policy "${SHINE_POLICY:-read-only}" \
+    --rtimeout "${RTIMEOUT:-0.9}" \
+    --shine-policy "${SHINE_POLICY:-disabled}" \
     --prod-tcp-writes "${PROD_TCP_WRITES:-enabled}" \
     --dev-tcp-writes "${DEV_TCP_WRITES:-enabled}" \
     --log "${LOG_PATH:--}" \

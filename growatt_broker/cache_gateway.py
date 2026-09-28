@@ -393,60 +393,6 @@ class PollCoordinator:
 
 
 @dataclass(frozen=True)
-class OpaqueProtocolObject:
-    request: bytes
-    response: bytes
-    captured_at: float
-    generation: int
-    quality: CacheQuality = CacheQuality.GOOD
-
-
-class OpaqueProtocolCache:
-    """Cache for proprietary frames such as Shine FC20."""
-
-    def __init__(self) -> None:
-        self._objects: dict[bytes, OpaqueProtocolObject] = {}
-        self._generation = 0
-
-    def put(
-        self,
-        request: bytes,
-        response: bytes,
-        *,
-        captured_at: float,
-    ) -> OpaqueProtocolObject:
-        if not crc_ok(request) or not crc_ok(response):
-            raise ValueError("opaque protocol objects must have valid CRCs")
-        if len(request) < 2 or request[1] != 0x20:
-            raise ValueError("request is not FC20")
-        if len(response) < 3 or response[1] != 0x20:
-            raise ValueError("response is not FC20")
-        self._generation += 1
-        value = OpaqueProtocolObject(
-            request=request,
-            response=response,
-            captured_at=captured_at,
-            generation=self._generation,
-        )
-        self._objects[request] = value
-        return value
-
-    def get(
-        self, request: bytes, *, now: float, max_age: float
-    ) -> OpaqueProtocolObject | None:
-        value = self.latest(request)
-        if value is None or value.quality is not CacheQuality.GOOD:
-            return None
-        if not 0 <= now - value.captured_at <= max_age:
-            return None
-        return value
-
-    def latest(self, request: bytes) -> OpaqueProtocolObject | None:
-        """Return the last validated object, regardless of age."""
-        return self._objects.get(request)
-
-
-@dataclass(frozen=True)
 class PatternKey:
     function: int
     start: int
@@ -581,27 +527,19 @@ class ShineVirtualInverterAdapter:
         coordinator: PollCoordinator,
         *,
         discovery_profiles: Iterable[DiscoveryProfile],
-        fc20_cache: OpaqueProtocolCache | None = None,
         request_handler: Callable[[bytes, float], GatewayResult] | None = None,
-        fc20_handler: Callable[[bytes, float], GatewayResult] | None = None,
-        passthrough_handler: Callable[[bytes, float], GatewayResult] | None = None,
-        allow_writes: bool = True,
     ) -> None:
         self.coordinator = coordinator
         self.discovery_profiles = {
             profile.request: profile for profile in discovery_profiles
         }
-        self.fc20_cache = fc20_cache or OpaqueProtocolCache()
         self.request_handler = request_handler
-        self.fc20_handler = fc20_handler
-        self.passthrough_handler = passthrough_handler
-        self.allow_writes = allow_writes
         self.mode = BrokerMode.SHINE_RECOVERING
 
-    def _passthrough(self, frame: bytes, now: float, reason: str) -> GatewayResult:
-        if self.passthrough_handler is not None:
+    def _forward(self, frame: bytes, now: float, reason: str) -> GatewayResult:
+        if self.request_handler is not None:
             self.mode = BrokerMode.SHINE_PRESENT
-            return self.passthrough_handler(frame, now)
+            return self.request_handler(frame, now)
         return GatewayResult("quarantined", "SHINE", reason=reason)
 
     def handle_request(self, frame: bytes, *, now: float) -> GatewayResult:
@@ -609,9 +547,9 @@ class ShineVirtualInverterAdapter:
             return GatewayResult("quarantined", "SHINE", reason="invalid_crc_or_frame")
         profile = self.discovery_profiles.get(frame)
         if profile is not None:
-            if self.passthrough_handler is not None:
+            if self.request_handler is not None:
                 self.mode = BrokerMode.SHINE_PRESENT
-                return self._passthrough(
+                return self._forward(
                     frame,
                     now,
                     f"physical_discovery:{profile.device_id}",
@@ -625,37 +563,16 @@ class ShineVirtualInverterAdapter:
             )
         function = frame[1]
         if function in (0x06, 0x10):
-            if not self.allow_writes:
-                return GatewayResult(
-                    "quarantined", "SHINE", reason="shine_write_disabled"
-                )
-            return self._passthrough(frame, now, "write_not_allowed")
-        if function == 0x20:
-            if self.fc20_handler is not None:
-                result = self.fc20_handler(frame, now)
-                if result.status not in {"quarantined", "pending"}:
-                    return result
-                return self._passthrough(frame, now, result.reason or "fc20_miss")
-            cached = self.fc20_cache.get(
-                frame, now=now, max_age=self.coordinator.max_age
-            )
-            if cached is None:
-                return self._passthrough(frame, now, "fc20_cache_miss")
-            return GatewayResult(
-                "served",
-                "SHINE",
-                response=cached.response,
-                reason="fc20_opaque_cache",
-            )
+            return self._forward(frame, now, "write_request")
         if function not in (0x03, 0x04) or len(frame) != 8:
-            return self._passthrough(frame, now, "unsupported_request")
+            return self._forward(frame, now, "unsupported_request")
         key = RegisterKey(
             function,
             int.from_bytes(frame[2:4], "big"),
             int.from_bytes(frame[4:6], "big"),
         )
         if frame[0] == 0:
-            return self._passthrough(frame, now, "unprofiled_unit_zero_read")
+            return self._forward(frame, now, "unit_zero_read")
         if self.request_handler is not None:
             self.mode = BrokerMode.SHINE_PRESENT
             return self.request_handler(frame, now)

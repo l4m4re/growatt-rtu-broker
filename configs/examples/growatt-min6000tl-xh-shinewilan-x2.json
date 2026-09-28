@@ -11,211 +11,128 @@
   },
   "metadata": {
     "notes": [
-      "The request set is learned on the RPi in setup mode with a deliberately empty poll plan.",
-      "The current X2 Shine sequence repeats approximately every 10 seconds per native block. Predictive prefetch follows that cadence; native_cadence_s is the fallback cadence used by the background poller when Shine traffic is absent, while active Shine traffic suppresses duplicate background reads.",
+      "The request set was learned on the RPi in setup mode and reduced to the native FC03/FC04 poll plan below.",
+      "The current X2 Shine sequence repeats approximately every 10 seconds per native block. The cache poller refreshes the oldest configured block opportunistically at a four-second target age; observed Shine traffic is retained for diagnostics.",
       "The observed FC03 192/1 request is covered by the configured FC03 180/20 block and is intentionally not polled separately.",
-      "FC20 is represented as function 32, start 0, count 100 after observation.",
+      "FC20 is served on demand and is not part of the background poll plan.",
       "The Shine serial number is deliberately not part of the installation profile."
-    ],
-    "native_cadence_s": 10.0
+    ]
   },
-  "mode": "cache+shine-predictive",
+  "mode": "cache+shine",
   "name": "Growatt MIN 6000TL-XH + ShineWiLan-X2 (current firmware)",
   "operation_mode": "live",
   "poll_plan": [
     {
       "count": 125,
       "function": 3,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc03_0_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 0
     },
     {
       "count": 20,
       "function": 3,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc03_180_20",
-      "priority": 1,
-      "service_class": "shine",
       "start": 180
     },
     {
       "count": 125,
       "function": 3,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc03_3000_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 3000
     },
     {
       "count": 125,
       "function": 3,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc03_3250_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 3250
     },
     {
       "count": 125,
       "function": 3,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc03_30000_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 30000
     },
     {
       "count": 125,
       "function": 3,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc03_30125_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 30125
     },
     {
       "count": 125,
       "function": 3,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc03_30250_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 30250
     },
     {
       "count": 125,
       "function": 3,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc03_30375_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 30375
     },
     {
       "count": 100,
       "function": 3,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc03_30500_100",
-      "priority": 1,
-      "service_class": "shine",
       "start": 30500
     },
     {
       "count": 125,
       "function": 4,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc04_3000_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 3000
     },
     {
       "count": 125,
       "function": 4,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc04_3125_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 3125
     },
     {
       "count": 125,
       "function": 4,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc04_3250_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 3250
     },
     {
       "count": 125,
       "function": 4,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc04_3375_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 3375
     },
     {
       "count": 125,
       "function": 4,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc04_31000_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 31000
     },
     {
       "count": 125,
       "function": 4,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc04_31125_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 31125
     },
     {
       "count": 125,
       "function": 4,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc04_31250_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 31250
     },
     {
       "count": 125,
       "function": 4,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc04_31375_125",
-      "priority": 1,
-      "service_class": "shine",
       "start": 31375
     },
     {
       "count": 100,
       "function": 4,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
       "name": "shine_fc04_31500_100",
-      "priority": 1,
-      "service_class": "shine",
       "start": 31500
-    },
-    {
-      "count": 100,
-      "function": 32,
-      "interval_s": 300.0,
-      "max_age_s": 600.0,
-      "name": "shine_fc32_0_100",
-      "priority": 1,
-      "service_class": "shine",
-      "start": 0
     }
   ],
   "schema": 1,
-  "source": "setup-observed-log-2026-09-26-conservative-predictive",
+  "source": "setup-observed-log-2026-09-26-conservative-cache",
   "transport": {
     "inverter": {
       "baud": 115200,
@@ -231,6 +148,6 @@
   "write_policy": {
     "dev_tcp": "enabled",
     "prod_tcp": "enabled",
-    "shine": "transparent"
+    "shine": "enabled"
   }
 }

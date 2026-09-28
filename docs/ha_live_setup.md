@@ -38,15 +38,12 @@ Set at least:
 ```ini
 INV_DEV=/dev/serial/by-path/<inverter-port>
 SHINE_DEV=/dev/serial/by-path/<shine-x2-port>
-BROKER_MODE=cache+shine-predictive
+BROKER_MODE=cache+shine
 INV_BAUD=115200
 INV_BYTES=8N1
 SHINE_BAUD=115200
 SHINE_BYTES=8N1
-MIN_PERIOD=0.5
-RTIMEOUT=8.0
-FC20_TIMEOUT=6.0
-SHINE_BURST=8
+RTIMEOUT=0.9
 TCP_BIND=0.0.0.0:5020
 TCP_ALT_BIND=0.0.0.0:5021
 SNIFF_BIND=0.0.0.0:5700
@@ -58,14 +55,15 @@ HOTPLUG_DEVICES=1
 
 The values above are the 2026-09-25 reference profile. Start with the
 known-good deployment values for the actual inverter and Shine firmware;
-`MIN_PERIOD`, timeout, and background polling cadence are separate concepts.
+The RTU timeout and background polling cadence are separate concepts.
 
 For an installation whose Shine poll set is not yet known, use the X2 example
-in setup mode. It has an empty `poll_plan`, so the broker learns complete FC03,
-FC04, and FC20 blocks from the physical Shine stream:
+in setup mode. The reviewed X2 profile contains the complete FC03 and FC04
+blocks learned from the physical Shine stream. FC20 is observed for diagnostics
+but remains on demand:
 
 ```bash
-CONFIG_PATH=/share/growatt-rtu-broker/configs/examples/growatt-min6000tl-xh-shinewilan-x2-current.json
+CONFIG_PATH=/share/growatt-rtu-broker/configs/examples/growatt-min6000tl-xh-shinewilan-x2.json
 OPERATION_MODE=setup
 SETUP_EXPORT_PATH=/share/growatt-broker-x2.candidate.json
 ```
@@ -73,17 +71,13 @@ SETUP_EXPORT_PATH=/share/growatt-broker-x2.candidate.json
 The `docker/run_broker.sh` helper mounts the source configuration read-only and
 the export directory read-write. After a bounded observation window, send
 `SIGUSR2` to the broker, review the candidate, and only then promote it to live
-mode. The example disables TCP and Shine writes during this process.
+mode. During this process, set each client write policy to `disabled`.
 
 The reviewed profile produced on 2026-09-26 is
-`configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json`. It contains
-twenty observed FC03, FC04, and FC20 blocks. The current X2 sequence repeats
-approximately every ten seconds per native block. Predictive prefetch follows
-that observed cadence. The profile's `metadata.native_cadence_s` value drives
-the fallback background poller when Shine traffic is absent. While Shine is
-active, the background path reuses the predictive refreshes instead of issuing
-duplicate physical reads. Production TCP, development TCP, and Shine writes
-are enabled. The previous live and setup containers remain named rollback
+`configs/examples/growatt-min6000tl-xh-shinewilan-x2.json`. It contains the observed FC03 and FC04 native blocks. FC20 is served on demand,
+not background-polled. The read-only cache poller selects the oldest configured
+block at a four-second target age; production TCP, development TCP, and Shine
+writes are enabled. The previous live and setup containers remain named rollback
 containers on the Pi.
 
 ## Build and run
@@ -105,8 +99,8 @@ Shine argument is omitted and USB hot-plug behavior is preserved:
 docker logs -f growatt-broker
 ```
 
-The helper uses the same side-specific baud/format, timeout, FC20, Shine
-policy, and burst settings as the compose profile. It can mount the host
+The helper uses the same side-specific baud/format, timeout, Shine policy, and
+write settings as the compose profile. It can mount the host
 `/dev` tree when `HOTPLUG_DEVICES=1`, which allows a re-enumerated adapter to
 be recovered without recreating the container.
 
@@ -119,8 +113,7 @@ docker run --rm --privileged -v /dev:/dev --network host \
   --inv-baud "${INV_BAUD:-115200}" --inv-bytes "${INV_BYTES:-8N1}" \
   --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" \
   --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
-  --min-period "${MIN_PERIOD:-0.5}" --rtimeout "${RTIMEOUT:-8.0}" \
-  --fc20-timeout "${FC20_TIMEOUT:-6.0}" --shine-burst "${SHINE_BURST:-8}" \
+  --rtimeout "${RTIMEOUT:-0.9}" \
   --prod-tcp-writes "${PROD_TCP_WRITES:-enabled}" \
   --dev-tcp-writes "${DEV_TCP_WRITES:-enabled}" --log "${LOG_PATH:--}"
 ```
@@ -140,9 +133,6 @@ Before an approved write test, verify:
 4. Shine traffic is visible on port 5700 and no CRC/exception/reopen storm is
    present; and
 5. the queue, physical latency, cache age, and timeout counters are recorded.
-
-The raw-transparent firmware profile is a separate one-shot test with no TCP
-endpoint. See [SHINE_FIRMWARE_FORENSICS.md](SHINE_FIRMWARE_FORENSICS.md).
 
 ## Stop, update, and rollback
 

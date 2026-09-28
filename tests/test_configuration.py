@@ -17,7 +17,7 @@ from growatt_broker.configuration import (
 def _base_config() -> InstallationConfig:
     path = (
         Path(__file__).parents[1]
-        / "configs/examples/growatt-min6000tl-xh-shinewifi-x-old.json"
+        / "configs/examples/growatt-min6000tl-xh-shinewifi-x.json"
     )
     return load_installation_config(path)
 
@@ -30,22 +30,22 @@ def test_installation_config_round_trips_atomically(tmp_path: Path) -> None:
     loaded = load_installation_config(path)
     assert loaded.name == "Growatt MIN 6000TL-XH + ShineWiFi-X (old firmware)"
     assert loaded.inverter_transport.baud == 115200
-    assert loaded.write_policy["shine"] == "transparent"
+    assert loaded.write_policy["shine"] == "enabled"
     assert loaded.poll_plan[0].key == RegisterKey(4, 3000, 125)
     assert json.loads(path.read_text(encoding="utf-8"))["schema"] == 1
 
 
-def test_current_x2_profile_uses_observed_cadence_for_background_fallback() -> None:
+def test_current_x2_profile_uses_opportunistic_cache_age() -> None:
     path = (
         Path(__file__).parents[1]
-        / "configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json"
+        / "configs/examples/growatt-min6000tl-xh-shinewilan-x2.json"
     )
 
     config = load_installation_config(path)
 
-    assert {block.interval_s for block in config.poll_plan} == {300.0}
-    assert {block.max_age_s for block in config.poll_plan} == {600.0}
-    assert config.metadata["native_cadence_s"] == 10.0
+    assert {block.interval_s for block in config.poll_plan} == {60.0}
+    assert {block.max_age_s for block in config.poll_plan} == {180.0}
+    assert "native_cadence_s" not in config.metadata
 
 
 def test_setup_observer_exports_stable_unknown_block(tmp_path: Path) -> None:
@@ -116,7 +116,7 @@ def test_setup_config_may_start_without_poll_plan() -> None:
     assert config.poll_plan == []
 
 
-def test_setup_observer_exports_fc20_as_poll_block() -> None:
+def test_setup_observer_keeps_fc20_out_of_poll_plan() -> None:
     observer = SetupPlanObserver(_base_config())
     key = RegisterKey(0x20, 0, 100)
 
@@ -124,10 +124,7 @@ def test_setup_observer_exports_fc20_as_poll_block() -> None:
     observer.observe(key, at=19.0)
     observer.observe(key, at=28.0)
 
-    candidate = observer.candidate()
-    learned = next(block for block in candidate.poll_plan if block.key == key)
-    assert learned.interval_s == 9.0
-    assert learned.max_age_s == 14.0
+    assert all(block.key != key for block in observer.candidate().poll_plan)
 
 
 def test_invalid_config_requires_poll_plan() -> None:
@@ -158,6 +155,14 @@ def test_invalid_config_rejects_unknown_mode_and_write_policy() -> None:
     else:
         raise AssertionError("invalid write policy should be rejected")
 
+    invalid_shine_policy = dict(base, write_policy={"shine": "transparent"})
+    try:
+        InstallationConfig.from_dict(invalid_shine_policy)
+    except ConfigurationError as exc:
+        assert "write_policy" in str(exc)
+    else:
+        raise AssertionError("legacy Shine policy should be rejected")
+
 
 def test_setup_gateway_adds_stable_unknown_shine_block() -> None:
     class Downstream:
@@ -178,24 +183,3 @@ def test_setup_gateway_adds_stable_unknown_shine_block() -> None:
         assert result.status == "served"
 
     assert RegisterKey(3, 30000, 125) in gateway._policy_by_key
-
-
-def test_setup_gateway_adds_fc20_to_poll_plan() -> None:
-    class Downstream:
-        def transact(self, request: bytes, **kwargs: object) -> bytes:
-            assert request == bytes.fromhex("01200000006481e6")
-            return add_crc(bytes([1, 0x20, 200]) + b"\x00" * 200)
-
-    observer = SetupPlanObserver(_base_config())
-    gateway = CacheGatewayService(Downstream(), setup_observer=observer)
-    request = bytes.fromhex("01200000006481e6")
-
-    for observed_at in (10.0, 19.0, 28.0):
-        result = gateway.handle_fc20(
-            request, client="SHINE", source="SHINE", now=observed_at
-        )
-        assert result.status == "served"
-        gateway.observe_shine_request(request, at=observed_at)
-
-    assert gateway._fc20_policy is not None
-    assert gateway._fc20_policy.key == RegisterKey(0x20, 0, 100)

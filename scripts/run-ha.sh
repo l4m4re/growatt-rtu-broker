@@ -68,8 +68,7 @@ DOCKER_ARGS+=("${IMAGE_TAG}"
   --baud "${BAUD:-9600}"
   --bytes "${BYTES:-8E1}"
   --tcp "${TCP_BIND:-0.0.0.0:5020}"
-  --min-period "${MIN_PERIOD:-1.0}"
-  --rtimeout "${RTIMEOUT:-1.5}"
+  --rtimeout "${RTIMEOUT:-0.9}"
   --log "${LOG_PATH:-/var/log/growatt_broker.jsonl}"
   --mode "${BROKER_MODE:-legacy}")
 if [ -n "${INV_BAUD:-}" ]; then DOCKER_ARGS+=(--inv-baud "${INV_BAUD}"); fi

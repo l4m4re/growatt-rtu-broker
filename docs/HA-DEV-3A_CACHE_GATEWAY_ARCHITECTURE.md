@@ -1,7 +1,7 @@
 # HA-DEV-3A cache-centric Growatt broker architecture
 
 Status: implemented opt-in architecture. The 2026-09-25 live reference uses
-`cache+shine-predictive`; `legacy` remains the documented rollback profile.
+`cache+shine`; `legacy` remains the documented rollback profile.
 The historical consolidated review and current live baseline are recorded in
 [`HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md`](archive/HA-DEV-3E_BROKER_CONSOLIDATION_REVIEW.md).
 
@@ -14,8 +14,7 @@ The Shine serial connection becomes a virtual-inverter client interface. Its
 discovery request is terminated locally for a validated device profile, and
 normal reads are answered from the same register cache used by HA.
 
-The cache implementation is enabled only with `--mode cache`, `--mode cache+shine`,
-`--mode cache+shine-direct`, or `--mode cache+shine-predictive`. The default
+The cache implementation is enabled only with `--mode cache`, `--mode cache+shine`, or `--mode cache+shine-direct`. The default
 remains `--mode legacy`, so upgrading the image does not silently change an
 explicit legacy deployment.
 
@@ -36,7 +35,7 @@ explicit legacy deployment.
   after one synthetic `01030213ecb4f9`, the Shine emitted normal unit-1 FC03
   requests. See the separate live report.
 - Observed normal workload includes FC03 pages, FC04 I3000/I3125/I3250
-  pages, and the exact opaque FC20 request
+  pages, and the exact on-demand FC20 request
   `01200000006481e6`. FC20 is not established as a DDSU666 proxy.
 
 ## Ownership invariant
@@ -53,8 +52,7 @@ HA production adapter       -> cache / demand coordinator
 HA development/tools        -> cache / demand coordinator
 ```
 
-Raw-transparent passthrough remains useful as an explicitly bounded forensic
-mode, but it is not the normal combined architecture.
+The normal combined architecture uses one parsed Modbus path for every client.
 
 ## State machine
 
@@ -71,8 +69,8 @@ SHINE_RECOVERING/DISCOVERY -- exact profiled H43 --> SHINE_PRESENT
 `SHINE_ABSENT` and `SHINE_LOST` keep autonomous polling alive. In
 `SHINE_PRESENT`, Shine requests are observations and demand signals; they do
 not acquire physical ownership. A discovery request is recognized only when it
-exactly matches a device-scoped `DiscoveryProfile`; in the transparent canary
-it is physically passed through so the inverter remains authoritative.
+exactly matches a device-scoped `DiscoveryProfile`; in the physical passthrough
+canary it is sent to the inverter so the inverter remains authoritative.
 
 ## Raw register cache
 
@@ -144,15 +142,15 @@ The cache mode can be exercised with:
 
 `cache+shine` recognizes the validated unit-0 discovery request but forwards it
 through the physical passthrough, answers standard reads from the shared cache,
-replays a validated FC20 object from the same service, and forwards writes and
+forwards FC20 as an ordinary on-demand Modbus frame, and forwards writes and
 other valid unknown requests physically. Valid unsolicited inverter frames are
 forwarded to the Shine. Bytes that do not form a CRC-valid frame are detected
 and reported (`shine_unframed_bytes` or `inverter_unframed_bytes`) with a
-bounded preview; they are not forwarded. Legacy and raw-transparent modes
-retain their existing behavior.
+bounded preview; they are not forwarded. Legacy mode retains direct physical
+forwarding behavior.
 
 `cache+shine-direct` keeps the cache available for HA/TCP clients but makes the
-Shine serial endpoint fully transparent: every valid Shine request, including
+Shine serial endpoint direct: every valid Shine request, including
 discovery, FC20, writes, and unknown functions, is sent to the inverter and the
 physical response is returned to the Shine. No Shine request is answered from
 the register or FC20 cache. The cache is still populated by HA/TCP reads and
@@ -173,7 +171,7 @@ FC04 I3125    count 125
 FC04 I3250    count 125       where applicable
 FC03 H180     count 20        observed smaller request
 FC03 H209     count 15        observed smaller request
-FC20         exact opaque request, not a register block
+FC20         ordinary on-demand Modbus frame, not a cache block
 ```
 
 Complete vendor-native pages are preferred when hardware validation confirms
@@ -188,7 +186,7 @@ The future physical interface should be explicit:
 
 ```python
 read_block(PhysicalPollRequest) -> RegisterSnapshot
-read_fc20(request)             -> OpaqueProtocolObject
+read_modbus_frame(request)    -> exact acknowledged response
 write_single(...)              -> exact acknowledged result
 write_multiple(...)            -> exact acknowledged result
 ```
@@ -233,30 +231,22 @@ client work:   three local responses
 ## Shine synchronization
 
 `ShinePatternObserver` records a bounded sequence of `(function, start,
-count)` requests and transition intervals. It uses a median interval and a
-jitter bound, not exact phase locking. A learned sequence is used only while
-the order and timing remain credible. A changed sequence clears prediction and
-falls back to freshness/on-demand behavior. When Shine disappears, the
-autonomous default profile continues.
-
-The adaptive poller should refresh the predicted native block shortly before
-Shine asks for it. It must never issue a second physical read merely because
-the Shine asked for a range that is already fresh.
+count)` requests for diagnostics and setup evidence. It does not schedule
+prefetches or predict the next request. The cache poller independently selects
+the oldest configured block at a four-second target age. When Shine disappears,
+the same read-only age-based poller continues.
 
 ## Shine absent/present behavior
 
-When absent, the physical poller uses the complete `poll_plan` from the
-selected installation configuration, including its observed native cadence.
-There is no hidden inverter-family fallback plan: cache modes require an
-explicit configuration, and a setup run can export a reviewed candidate after
-observing the actual traffic. The optional `metadata.native_cadence_s` value
-sets the fallback cycle when the logger is absent; it does not assign
-undocumented register meanings. The configuration may also include an opaque
-FC20 cadence.
+The physical poller uses the complete `poll_plan` from the selected installation
+configuration. There is no hidden inverter-family fallback plan: cache modes
+require an explicit configuration, and setup can export a reviewed candidate
+after observing the actual traffic. FC20 is forwarded on demand and is not part
+of the poll plan.
 
-When present, Shine requests are observed, cached, and used to refine order,
-cadence, and prefetch. The Shine receives synthesized responses from cache.
-It does not become a second physical master.
+When present, Shine requests are observed for diagnostics and standard reads are
+answered from the shared cache or coalesced refresh. Shine does not become a
+second physical master.
 
 ## Discovery handling
 
@@ -275,11 +265,9 @@ response is enabled.
 
 ## FC20
 
-FC20 is represented by `OpaqueProtocolCache`. It stores the exact CRC-valid
-request, exact CRC-valid response, capture timestamp, generation, and quality.
-It does not decode the 200-byte payload and does not describe it as DDSU666
-telemetry. A physical poller may later issue the exact known request and cache
-the response, after an isolated read-only validation.
+FC20 is an ordinary on-demand Modbus frame. The broker validates its response
+length and CRC using the same standard response reader, forwards it through the
+shared downstream queue, and does not cache or background-poll it.
 
 ## Writes
 
@@ -291,12 +279,11 @@ path with:
 - affected-cache invalidation and read-back where applicable;
 - origin, lease/arm state, and audit logging.
 
-Shine-originated writes are classified independently as known housekeeping,
-configuration, or unknown. The installation configuration controls whether
-FC06/FC10 writes are forwarded for each TCP source and for Shine. A
-`read-only` Shine policy quarantines FC06/FC10; `transparent` is an explicit
-installation or test choice. Unknown functions remain quarantined, and this
-transport project does not decide that H188 should be forwarded.
+The installation configuration controls whether FC06/FC10 writes are forwarded
+for each client source. The same `enabled`/`disabled` values apply to the
+production TCP listener, development TCP listener, and Shine. Reads and
+on-demand functions use the shared downstream queue; this transport project
+does not decide that H188 should be written.
 
 ## Failure semantics
 
@@ -307,11 +294,11 @@ transport project does not decide that H188 should be forwarded.
 | Shine hotplug | virtual adapter reconnects; physical owner unchanged |
 | Shine discovery | exact profiled request answered locally |
 | Shine normal polling | reads served from cache or coalesced refresh |
-| Shine silent | decay prediction confidence; default polling continues |
+| Shine silent | diagnostic observations stop; age-based polling continues |
 | cache stale | one shared refresh, never silently current |
 | client disconnects | remove its waiter; physical poll may still serve other waiters |
 | physical timeout | complete waiters as failed; no false fresh snapshot |
-| FC20 timeout | leave opaque object stale/unavailable; no fabricated payload |
+| FC20 timeout | return the normal on-demand timeout/failure; no fabricated payload |
 | ambiguous write | do not blind retry; require audit/read-back policy |
 | broker restart | empty cache; no values are served as initialized state |
 
@@ -327,8 +314,7 @@ It does establish the useful bound: for every freshness interval, repeated
 requests for one native page can change from one physical transaction per
 client/request to one physical refresh shared by all clients. The deterministic
 example above is a 3-to-1 physical reduction. The larger reduction depends on
-which of H0/H180/H209, I3000/I3125/I3250, and FC20 are assigned FAST, NORMAL,
-SLOW, and DIAGNOSTIC freshness classes.
+which standard native blocks need tighter monitoring or stale alarms.
 
 ## Prototype and validation
 
@@ -339,7 +325,7 @@ The prototype files are:
 
 The test suite covers discovery scoping, fresh-cache serving, overlap, stale
 refresh, duplicate coalescing, failure state, generation coherence, state
-transitions, jitter/fallback prediction, opaque FC20, write policy, setup-mode
+transitions, age-based polling, on-demand FC20 forwarding, write policy, setup-mode
 configuration learning, and simulator behavior. Run the standalone checks
 from this repository with the pinned virtual environment:
 
@@ -351,8 +337,8 @@ from this repository with the pinned virtual environment:
 
 ## Staged migration
 
-The cache gateway, virtual Shine path, opaque FC20 transport, cadence
-observation, explicit installation plans, and source-specific write policy are
+The cache gateway, virtual Shine path, ordinary on-demand Modbus forwarding,
+request observation, explicit installation plans, and source-specific write policy are
 implemented. Remaining work is operational: review setup candidates, run a
 bounded canary for each logger/inverter firmware combination, and preserve a
 rollback image and evidence for every live change. No candidate is promoted
@@ -364,7 +350,6 @@ automatically.
   firmware and for older protocol families?
 - What response latency and cache age does Shine tolerate for each block?
 - Does a future validated profile need more than H43 for device identity?
-- Which FC20 cadence is useful without duplicating Shine's proprietary work?
 - Which H188 behavior is housekeeping and which is configuration on each
   Shine firmware version?
 - How should HA entity/statistics continuity constrain any later source-map

@@ -15,12 +15,12 @@ The public package and command are still named `growatt-rtu-broker` and
 - Modbus TCP listeners for production and development clients;
 - optional shared FC03/FC04 register-block cache;
 - optional virtual or direct Shine path;
-- bounded raw-transparent serial bridge for forensic captures;
-- structured JSONL traffic and forensic logs;
+- structured JSONL traffic logs;
 - a dataset-backed simulator and analysis tools;
 - FC06/FC10 write invalidation and complete-block readback in cache mode.
 
 The cache is a register-block cache. It is not a duplicate TCP response cache.
+The installation examples identify each native block with its function, start register, count, and name. Refresh timing is broker policy, not per-example metadata. FC20 is fetched on demand only.
 A successful write is reported only after the affected block has been read back
 through the same paced physical path. Register names, scaling, access flags,
 and inverter-family semantics belong in
@@ -35,13 +35,12 @@ and inverter-family semantics belong in
 | `cache` | Physical inverter owner and shared native FC03/FC04 cache. |
 | `cache+shine` | Shared cache with a virtual Shine client path. |
 | `cache+shine-direct` | Shared scheduler with direct Shine forwarding. |
-| `cache+shine-predictive` | Shared cache plus observed Shine cadence and prefetch. |
-| `legacy --shine-policy raw-transparent` | Temporary byte-for-byte forensic bridge. It disables both TCP listeners and must be the only owner of both serial ports. |
 
-On the 2026-09-25 reference Pi, the normal X2 profile used 115200 8N1 on
-both ports, a 0.5 second minimum transaction period, an 8 second RTU
-timeout, a 6 second FC20 timeout, and an eight-transaction Shine burst. These
-values are deployment evidence, not universal device requirements.
+On the current reference Pi, the normal X2 profile uses 115200 8N1 on both
+ports, no artificial inter-transaction delay, and a 0.9 second RTU timeout for
+all Modbus reads, including FC20. The cache poller opportunistically refreshes the oldest configured block when
+it reaches a four-second target age. These values are deployment evidence, not
+universal device requirements.
 
 The ShineWiLan-X2 and inverter adapters are both CH340-class devices without
 unique USB serial numbers. Select them with stable `/dev/serial/by-path`
@@ -79,13 +78,13 @@ An installation configuration is one reviewable JSON file containing the
 inverter/logger identification, serial settings, and complete native poll
 plan. Example configurations are in
 [`configs/examples/`](configs/examples/). The old ShineWiFi-X and current
-ShineWiLan-X2 examples deliberately omit device serial numbers. The X2
-candidate is write-disabled/read-only while it is in setup mode; the old
-reviewed profile demonstrates the explicit enabled/transparent settings.
+ShineWiLan-X2 examples deliberately omit device serial numbers. Setup mode
+uses disabled writes; the reviewed live profiles demonstrate the explicit
+enabled settings.
 
 The same file controls write policy for the production TCP listener, the
-development TCP listener, and Shine. Use `"disabled"` for either TCP value,
-or `"read-only"` for Shine, when setup or a canary must not forward writes.
+development TCP listener, and Shine. Use `"disabled"` for a client when setup
+or a canary must not forward its writes.
 The older Docker environment variables (`PROD_TCP_WRITES`,
 `DEV_TCP_WRITES`, and `SHINE_POLICY`) remain command-line overrides for
 deployments that have not migrated to an installation file.
@@ -98,8 +97,9 @@ growatt-broker --config /share/growatt-broker/installation.json
 
 Setup mode observes Shine and TCP reads, adds stable unknown register blocks
 to the in-memory cache plan, and keeps the original configuration unchanged.
-The X2 example intentionally starts with an empty `poll_plan`; FC03, FC04,
-and FC20 blocks are learned from the actual Shine traffic. Send `SIGUSR2` to
+The X2 example contains the reviewed FC03 and FC04 blocks learned from the
+actual Shine traffic. FC20 remains observable but is fetched on demand. Send
+`SIGUSR2` to
 export the candidate configuration:
 
 ```bash
@@ -113,18 +113,15 @@ kill -USR2 <broker-pid>
 Only a reviewed candidate should be promoted to live mode. Setup mode does
 not initiate background writes and does not replace the configured profile
 automatically. Client-originated writes remain controlled by the configured
-`write_policy` (set it to disabled/read-only for a write-free observation run).
+`write_policy` (set each client to `disabled` for a write-free observation run).
 
 The learned live profile is recorded in
-[`configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json`](configs/examples/growatt-min6000tl-xh-shinewilan-x2-learned.json).
-It contains the twenty observed FC03/FC04/FC20 blocks for the current
+[`configs/examples/growatt-min6000tl-xh-shinewilan-x2.json`](configs/examples/growatt-min6000tl-xh-shinewilan-x2.json).
+It contains the observed FC03/FC04 native blocks for the current
 MIN 6000TL-XH firmware (`ALBA18010122`) and ShineWiLan-X2 firmware
-(`7.6.2.5`), with the FC03 `192/1` subset covered by the configured
-`180/20` block. The current X2 sequence repeats approximately every ten
-seconds per native block. Predictive prefetch follows that observed cadence.
-The profile's `metadata.native_cadence_s` value drives the fallback background
-poller when Shine traffic is absent. While Shine is active, the background path
-reuses the predictive refreshes instead of issuing duplicate physical reads.
+(`7.6.2.5`); FC20 is served on demand and is not a background block. The
+profile stores only the block identity (`function`, `start`, `count`, and
+`name`); refresh timing is a broker policy rather than installation metadata.
 The live RPi currently uses this profile with production TCP, development TCP,
 and Shine writes enabled.
 
@@ -132,7 +129,7 @@ The helper can mount the configuration on the RPi and write the candidate to a
 separate host path:
 
 ```bash
-CONFIG_PATH=/share/growatt-rtu-broker/configs/examples/growatt-min6000tl-xh-shinewilan-x2-current.json \
+CONFIG_PATH=/share/growatt-rtu-broker/configs/examples/growatt-min6000tl-xh-shinewilan-x2.json \
 OPERATION_MODE=setup \
 SETUP_EXPORT_PATH=/share/growatt-broker-x2.candidate.json \
 docker/run_broker.sh
@@ -160,15 +157,12 @@ on the target Pi:
 ```ini
 INV_DEV=/dev/serial/by-path/<inverter-port>
 SHINE_DEV=/dev/serial/by-path/<shine-x2-port>
-BROKER_MODE=cache+shine-predictive
+BROKER_MODE=cache+shine
 INV_BAUD=115200
 INV_BYTES=8N1
 SHINE_BAUD=115200
 SHINE_BYTES=8N1
-MIN_PERIOD=0.5
-RTIMEOUT=8.0
-FC20_TIMEOUT=6.0
-SHINE_BURST=8
+RTIMEOUT=0.9
 TCP_BIND=0.0.0.0:5020
 TCP_ALT_BIND=0.0.0.0:5021
 SNIFF_BIND=0.0.0.0:5700
@@ -197,24 +191,6 @@ encryption.
 See [docs/ha_live_setup.md](docs/ha_live_setup.md) for deployment and
 rollback. The normal rollback is to stop the new container and start the
 previously tagged image with the previous command and device aliases.
-
-## Forensic captures
-
-Use [docs/SHINE_FIRMWARE_FORENSICS.md](docs/SHINE_FIRMWARE_FORENSICS.md) for
-the raw-transparent profile. It is a bounded diagnostic mode, not a normal
-broker mode:
-
-```bash
-mkdir -p captures
-INV_DEV=/dev/serial/by-path/<inverter-port> \
-SHINE_DEV=/dev/serial/by-path/<shine-x2-port> \
-docker compose -f docker-compose.forensic.yml run --rm forensic
-```
-
-The profile has no Modbus TCP endpoint and must not run concurrently with the
-normal broker. Store captures outside the repository unless a small,
-sanitisable, reproducible sample is needed for a test. Never commit
-credentials, private network addresses, or unbounded live logs.
 
 ## Evidence and protocol boundaries
 

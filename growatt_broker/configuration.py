@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -77,19 +78,29 @@ class PollBlockConfig:
     def from_dict(cls, value: dict[str, Any]) -> "PollBlockConfig":
         try:
             function = int(value["function"])
-            start = int(value["start"])
             count = int(value["count"])
+            name = str(value.get("name", f"fc{function:02d}"))
+            if "start" in value:
+                start = int(value["start"])
+            else:
+                numbers = [int(item) for item in re.findall(r"\d+", name)]
+                if len(numbers) >= 2 and numbers[-1] == count:
+                    start = numbers[-2]
+                elif numbers:
+                    start = numbers[-1]
+                else:
+                    raise ConfigurationError(
+                        "poll block without start must encode it in name"
+                    )
         except (KeyError, TypeError, ValueError) as exc:
             raise ConfigurationError(f"invalid poll block: {value!r}") from exc
-        if function not in (3, 4, 0x20) or not 1 <= count <= 125 or start < 0:
+        if function not in (3, 4) or not 1 <= count <= 125 or start < 0:
             raise ConfigurationError(f"invalid poll block range: {value!r}")
-        if function == 0x20 and (start, count) != (0, 100):
-            raise ConfigurationError("FC20 poll block must use start=0 and count=100")
         return cls(
             function=function,
             start=start,
             count=count,
-            name=str(value.get("name", f"fc{function:02d}_{start}")),
+            name=name,
             interval_s=max(0.1, float(value.get("interval_s", 60.0))),
             max_age_s=max(0.1, float(value.get("max_age_s", 180.0))),
             service_class=str(value.get("service_class", "monitoring")),
@@ -115,10 +126,6 @@ class PollBlockConfig:
             "start": self.start,
             "count": self.count,
             "name": self.name,
-            "interval_s": self.interval_s,
-            "max_age_s": self.max_age_s,
-            "service_class": self.service_class,
-            "priority": self.priority,
         }
 
 
@@ -149,7 +156,6 @@ class InstallationConfig:
             "cache",
             "cache+shine",
             "cache+shine-direct",
-            "cache+shine-predictive",
         }:
             raise ConfigurationError(f"unsupported broker mode: {mode}")
         operation_mode = str(value.get("operation_mode", "live"))
@@ -170,7 +176,7 @@ class InstallationConfig:
         valid_policies = {
             "prod_tcp": {"enabled", "disabled"},
             "dev_tcp": {"enabled", "disabled"},
-            "shine": {"read-only", "transparent", "raw-transparent"},
+            "shine": {"enabled", "disabled"},
         }
         for name, setting in write_policy.items():
             if name not in valid_policies or setting not in valid_policies[name]:
@@ -244,11 +250,20 @@ class InstallationConfig:
     def copy_with_blocks(
         self, blocks: list[PollBlockConfig], *, source: str = "setup-observed"
     ) -> "InstallationConfig":
-        value = self.to_dict()
-        value["poll_plan"] = [block.to_dict() for block in blocks]
-        value["source"] = source
-        value["operation_mode"] = "live"
-        return InstallationConfig.from_dict(value)
+        return InstallationConfig(
+            name=self.name,
+            inverter=dict(self.inverter),
+            logger=dict(self.logger),
+            inverter_transport=self.inverter_transport,
+            logger_transport=self.logger_transport,
+            poll_plan=list(blocks),
+            mode=self.mode,
+            operation_mode="live",
+            source=source,
+            schema=self.schema,
+            write_policy=dict(self.write_policy),
+            metadata=dict(self.metadata),
+        )
 
 
 def load_installation_config(path: str | os.PathLike[str]) -> InstallationConfig:
@@ -300,7 +315,7 @@ class SetupPlanObserver:
         self._recommended: dict[PatternKey, PollBlockConfig] = {}
 
     def observe(self, key: RegisterKey, *, at: float | None = None) -> None:
-        if key.function not in (3, 4, 0x20):
+        if key.function not in (3, 4):
             return
         observed_at = time.monotonic() if at is None else at
         pattern = PatternKey(key.function, key.start, key.count)

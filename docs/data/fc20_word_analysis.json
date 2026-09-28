@@ -2,7 +2,7 @@
   "schema": "growatt-raw-wire-analysis-v1",
   "analysis": {
     "source": "LIVE DEVICE raw-transparent WIRE capture",
-    "parser": "tools/analyze_raw_wire.py",
+    "parser": "historical capture analysis (runtime analyzer removed)",
     "association_policy": "direction + structural length + CRC + unit/function; unresolved associations are retained",
     "unknown_bytes": 0
   },
