@@ -1983,6 +1983,8 @@ class CacheGatewayService:
 
     def _run_poller(self) -> None:
         while not self._stop.is_set():
+            # Submit one block only; the shared scheduler arbitrates the next
+            # physical transaction before this thread selects another block.
             now = time.monotonic()
             target = self._oldest_background_target(now)
             if target is not None:
