@@ -76,7 +76,7 @@ mode. During this process, set each client write policy to `disabled`.
 The reviewed profile produced on 2026-09-26 is
 `configs/examples/growatt-min6000tl-xh-shinewilan-x2.json`. It contains the observed FC03 and FC04 native blocks. FC20 is served on demand,
 not background-polled. The read-only cache poller selects the oldest configured
-block at a four-second target age; production TCP, development TCP, and Shine
+block at a nine-second target age; production TCP, development TCP, and Shine
 writes are enabled. The previous live and setup containers remain named rollback
 containers on the Pi.
 

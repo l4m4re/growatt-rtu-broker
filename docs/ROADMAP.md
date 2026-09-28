@@ -21,7 +21,7 @@ for register names or inverter semantics.
 - FC06/FC10 cache invalidation plus complete-block read-after-write before a
   coherent write result is returned;
 - Shine request observation for diagnostics and setup learning;
-- opportunistic read-only cache polling based on block age (four-second target);
+- opportunistic read-only cache polling based on block age (nine-second target);
 - explicit installation JSON configurations for the poll plan, transport,
   inverter, and logger combination;
 - live mode with an approved installation plan and setup mode that observes

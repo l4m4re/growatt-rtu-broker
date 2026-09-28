@@ -37,7 +37,7 @@ mode: cache+shine
 ```
 
 The native FC03/FC04 block identities and write permissions are selected by one installation JSON
-configuration. Refresh timing is broker policy: the read-only cache poller selects the oldest block at a four-second target age. FC20 is on-demand only. The old ShineWiFi-X/old-firmware plan and the current X2
+configuration. Refresh timing is broker policy: the read-only cache poller selects the oldest block at a nine-second target age. FC20 is on-demand only. The old ShineWiFi-X/old-firmware plan and the current X2
 candidate are kept under [`configs/examples/`](../configs/examples/). A setup
 run can observe unknown standard blocks and export a candidate, but promotion
 to live mode remains a human review and canary step.

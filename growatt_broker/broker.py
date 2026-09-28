@@ -981,7 +981,7 @@ class CacheGatewayService:
     _ON_DEMAND_MAX_AGE = 10.0
     _NON_SHINE_MAX_AGE = 180.0
     _WAIT_TIMEOUT = 8.0
-    _BACKGROUND_TARGET_AGE = 4.0
+    _BACKGROUND_TARGET_AGE = 9.0
     _BACKGROUND_RETRY_DELAY = 1.0
 
     def __init__(

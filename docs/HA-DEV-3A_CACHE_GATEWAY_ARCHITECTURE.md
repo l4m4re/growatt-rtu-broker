@@ -233,7 +233,7 @@ client work:   three local responses
 `ShinePatternObserver` records a bounded sequence of `(function, start,
 count)` requests for diagnostics and setup evidence. It does not schedule
 prefetches or predict the next request. The cache poller independently selects
-the oldest configured block at a four-second target age. When Shine disappears,
+the oldest configured block at a nine-second target age. When Shine disappears,
 the same read-only age-based poller continues.
 
 ## Shine absent/present behavior
