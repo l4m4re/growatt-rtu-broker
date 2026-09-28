@@ -987,7 +987,6 @@ class CacheGatewayService:
     _NON_SHINE_MAX_AGE = 180.0
     _WAIT_TIMEOUT = 8.0
     _BACKGROUND_TARGET_AGE = 9.0
-    _BACKGROUND_RETRY_DELAY = _BACKGROUND_TARGET_AGE
 
     def __init__(
         self,
@@ -1016,6 +1015,8 @@ class CacheGatewayService:
         self._next_due: dict[RegisterKey, float] = {
             policy.key: 0.0 for policy in self.policies
         }
+        self._background_attempted: set[RegisterKey] = set()
+        self._background_round_restart_at = 0.0
         self._last_errors: dict[RegisterKey, str | None] = {}
         self._stop = threading.Event()
         self._poller = threading.Thread(
@@ -1939,8 +1940,14 @@ class CacheGatewayService:
             snapshots = {snapshot.key: snapshot for snapshot in self.cache.snapshots()}
             policies = tuple(self.policies)
             next_due = dict(self._next_due)
+            attempted = set(self._background_attempted)
+            round_restart_at = self._background_round_restart_at
+        if now < round_restart_at:
+            return None
         candidates: list[tuple[float, int, str, CachePolicy | None]] = []
         for policy in policies:
+            if policy.key in attempted:
+                continue
             if now < next_due.get(policy.key, 0.0):
                 continue
             snapshot = snapshots.get(policy.key)
@@ -1957,7 +1964,11 @@ class CacheGatewayService:
         deadlines: list[float] = []
         with self._lock:
             snapshots = {snapshot.key: snapshot for snapshot in self.cache.snapshots()}
+            attempted = set(self._background_attempted)
+            round_restart_at = self._background_round_restart_at
             for policy in self.policies:
+                if policy.key in attempted:
+                    continue
                 retry = self._next_due.get(policy.key, 0.0)
                 captured = snapshots.get(policy.key)
                 age_due = (
@@ -1966,6 +1977,8 @@ class CacheGatewayService:
                     else captured.captured_at + self._background_target_age(policy)
                 )
                 deadlines.append(max(retry, age_due))
+            if round_restart_at > now:
+                deadlines.append(round_restart_at)
         return min(deadlines) if deadlines else None
 
     def _run_poller(self) -> None:
@@ -1983,11 +1996,17 @@ class CacheGatewayService:
                     force_refresh=True,
                 )
                 with self._lock:
-                    self._next_due[policy.key] = (
-                        time.monotonic() + self._BACKGROUND_RETRY_DELAY
-                        if error is not None
-                        else 0.0
-                    )
+                    if error is not None:
+                        self._background_attempted.add(policy.key)
+                    else:
+                        self._background_attempted.add(policy.key)
+                    if self._background_attempted == {
+                        configured.key for configured in self.policies
+                    }:
+                        self._background_round_restart_at = (
+                            time.monotonic() + self._BACKGROUND_TARGET_AGE
+                        )
+                        self._background_attempted.clear()
                 continue
             deadline = self._next_background_deadline(now)
             if deadline is None:
