@@ -584,7 +584,6 @@ class Downstream:
         fmt: str,
         *,
         rtimeout: float = 0.9,
-        fc20_timeout: float = 2.0,
         reopen_after_timeouts: int = 10,
         events: Optional[EventHub] = None,
     ):
@@ -620,7 +619,6 @@ class Downstream:
         self._queue_condition = threading.Condition()
         self._pending: list[DownstreamRequest] = []
         self.rtimeout = float(rtimeout)
-        self.fc20_timeout = float(fc20_timeout)
         self._consecutive_timeouts = 0
         self._reopen_after_timeouts = int(reopen_after_timeouts)
         self._async_frame_handler: Callable[[bytes], None] | None = None
@@ -879,7 +877,7 @@ class Downstream:
         physical_latency_ms = 0.0
         retry_count = 0
         transaction_started = time.monotonic()
-        timeout = self.fc20_timeout if req[1] == 0x20 else self.rtimeout
+        timeout = self.rtimeout
         for attempt in range(attempts):
             if not self._ensure_serial():
                 break
@@ -2443,12 +2441,6 @@ def main():
         "--rtimeout", type=float, default=None, help="RTU read timeout seconds"
     )
     ap.add_argument(
-        "--fc20-timeout",
-        type=float,
-        default=None,
-        help="RTU timeout seconds for FC20 reads",
-    )
-    ap.add_argument(
         "--reopen-after-timeouts",
         type=int,
         default=None,
@@ -2498,7 +2490,6 @@ def main():
     args.baud = args.baud or 9600
     args.bytes = args.bytes or "8E1"
     args.rtimeout = args.rtimeout if args.rtimeout is not None else 0.9
-    args.fc20_timeout = args.fc20_timeout if args.fc20_timeout is not None else 2.0
     args.reopen_after_timeouts = (
         args.reopen_after_timeouts if args.reopen_after_timeouts is not None else 10
     )
@@ -2574,7 +2565,6 @@ def main():
         inv_baud,
         inv_bytes,
         rtimeout=args.rtimeout,
-        fc20_timeout=args.fc20_timeout,
         reopen_after_timeouts=args.reopen_after_timeouts,
         events=events,
     )

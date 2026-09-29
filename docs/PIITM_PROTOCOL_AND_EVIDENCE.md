@@ -31,7 +31,7 @@ reference profile is:
 inverter: 115200 8N1, stable /dev/serial/by-path alias
 Shine X2: 115200 8N1, stable /dev/serial/by-path alias
 minimum physical transaction period: none; the single-owner queue still serializes transactions
-RTU timeout: 0.9 s for standard FC03/FC04 reads and 2.0 s for FC20 reads
+RTU timeout: 0.9 s for all Modbus reads, including FC20
 serial reopen threshold: 10 consecutive standard physical timeouts; background
 The cache poller submits one oldest block at a time. Each physical transaction
 returns to the shared queue before another background block is submitted, so a
