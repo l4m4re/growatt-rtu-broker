@@ -296,13 +296,20 @@ class RTUFramer:
             for frame_start in range(max(0, end_limit - 3)):
                 if frame_start + 1 >= end_limit:
                     break
+                if data[frame_start] not in (0, unit) and not (
+                    allow_unit_zero_wildcard and unit == 0
+                ):
+                    continue
                 function = data[frame_start + 1]
                 lengths: list[int] = []
                 if function & 0x80:
                     lengths.append(5)
                 elif function in (0x03, 0x04, 0x20):
+                    lengths.append(8)
                     if frame_start + 2 < end_limit:
-                        lengths.append(5 + data[frame_start + 2])
+                        response_length = 5 + data[frame_start + 2]
+                        if response_length != 8:
+                            lengths.append(response_length)
                 elif function in (0x06,):
                     lengths.append(8)
                 elif function == 0x10:

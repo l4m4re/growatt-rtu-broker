@@ -201,6 +201,46 @@ def test_fc20_request_uses_standard_reader() -> None:
     assert framer.read_standard_frame(req, timeout=0.1) == response
 
 
+@pytest.mark.parametrize(
+    ("request_frame", "response_frame"),
+    [
+        pytest.param(
+            request(0x03, 180, 20),
+            add_crc(bytes([1, 0x03, 40]) + bytes(40)),
+            id="fc03",
+        ),
+        pytest.param(
+            request(0x04, 3250, 125),
+            add_crc(bytes([1, 0x04, 250]) + bytes(250)),
+            id="fc04",
+        ),
+        pytest.param(
+            add_crc(bytes.fromhex("012000000064")),
+            add_crc(bytes([1, 0x20, 200]) + bytes(200)),
+            id="fc20",
+        ),
+    ],
+)
+def test_standard_reader_reports_unmatched_request_frames(
+    request_frame: bytes,
+    response_frame: bytes,
+) -> None:
+    """Recognize standard request frames mixed into the response stream."""
+    serial = FakeSerial()
+    serial.feed(request_frame + response_frame)
+    framer = RTUFramer(serial, char_time=0.001)
+    observed: list[bytes] = []
+
+    result = framer.read_standard_frame(
+        request_frame,
+        timeout=0.2,
+        on_unmatched=observed.append,
+    )
+
+    assert result == response_frame
+    assert observed == [request_frame]
+
+
 def test_matching_reader_discards_valid_unrelated_async_frame() -> None:
     async_frame = add_crc(bytes.fromhex("00090100"))
     expected = add_crc(bytes([1, 0x20, 200]) + bytes(range(200)))
