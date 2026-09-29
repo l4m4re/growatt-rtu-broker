@@ -9,18 +9,20 @@ to a fixed minor number, can continue running while every inverter request
 times out.
 
 The broker now treats repeated inverter time-outs as a transport recovery
-signal. After two consecutive unanswered physical attempts it:
+signal. It never retries the failed request. After ten consecutive unanswered
+standard physical transactions it:
 
 1. closes the current serial handle;
 2. reopens the stable paths captured at startup, preferring matching
    stable `/dev/serial/by-path` aliases;
 3. clears the RTU framer and operating-system input/output buffers;
-4. retries the next eligible request and emits structured reopen events.
+4. emits structured reopen events; the next queued request is handled normally.
 
 The event stream includes `inverter_serial_reopen`, `inverter_open_failed`,
 `inverter_serial_reopened`, and `inverter_buffer_reset_failed`. A successful
 Modbus response resets the consecutive-timeout counter. This is a local
-transport recovery only; it does not power-cycle the inverter.
+transport recovery only; it does not power-cycle the inverter. A TCP or Shine
+client may retry after receiving a timeout.
 
 ## Container requirement
 
@@ -59,5 +61,5 @@ The 2026-09-25 live reference uses `cache+shine` with the X2 path.
 This mechanism can recover a serial close/reopen, stale input bytes, and a
 host-visible USB re-enumeration. It cannot recover a device that is absent
 from the container namespace, a failed USB-RS485 adapter, or an inverter that
-has latched up internally. In those cases the broker continues retrying and
-logs the open failures; an inverter power cycle remains the last resort.
+has latched up internally. In those cases the broker logs the open failures;
+an inverter power cycle remains the last resort.

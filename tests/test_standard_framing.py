@@ -7,7 +7,6 @@ from growatt_broker.broker import (
     RTUFramer,
     add_crc,
     find_standard_response,
-    is_retryable_standard_read,
     standard_response_spec,
 )
 
@@ -177,18 +176,6 @@ def test_fc20_request_has_deterministic_response_spec() -> None:
     req = add_crc(bytes.fromhex("012000000001"))
 
     assert standard_response_spec(req) == (1, 0x20, 7)
-
-
-@pytest.mark.parametrize("function", [0x03, 0x04])
-def test_standard_reads_are_retryable(function: int) -> None:
-    assert is_retryable_standard_read(request(function, 73, 1))
-
-
-@pytest.mark.parametrize("function", [0x06, 0x10, 0x20])
-def test_writes_and_nonstandard_requests_are_not_retryable(function: int) -> None:
-    req = add_crc(bytes([1, function, 0, 73, 0, 1]))
-
-    assert not is_retryable_standard_read(req)
 
 
 def test_fc20_request_uses_standard_reader() -> None:

@@ -31,13 +31,14 @@ reference profile is:
 inverter: 115200 8N1, stable /dev/serial/by-path alias
 Shine X2: 115200 8N1, stable /dev/serial/by-path alias
 minimum physical transaction period: none; the single-owner queue still serializes transactions
-RTU timeout: 0.9 s for all Modbus reads, including FC20
+RTU timeout: 0.85 s for all Modbus reads, including FC20
 serial reopen threshold: 10 consecutive standard physical timeouts; background
 The cache poller submits one oldest block at a time. Each physical transaction
 returns to the shared queue before another background block is submitted, so a
 pending write or on-demand request can run between blocks. A failed background
 block is skipped while the remaining candidates are considered, preventing an
-immediate retry loop.
+immediate retry loop. The broker does not retry a timed-out physical
+transaction; any retry is initiated by the requesting client.
 TCP: 5020 production, 5021 development, 5700 JSONL sniff stream
 mode: cache+shine
 ```

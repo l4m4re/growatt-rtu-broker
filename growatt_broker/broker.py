@@ -84,11 +84,6 @@ def standard_response_spec(request: bytes) -> tuple[int, int, int] | None:
     return None
 
 
-def is_retryable_standard_read(request: bytes) -> bool:
-    """Return whether a standard TCP request can be safely retried."""
-    return standard_response_spec(request) is not None and request[1] in (0x03, 0x04)
-
-
 def find_standard_response(
     buffer: bytes, request: bytes, *, allow_unit_zero_wildcard: bool = False
 ) -> bytes | None:
@@ -583,7 +578,7 @@ class Downstream:
         baud: int,
         fmt: str,
         *,
-        rtimeout: float = 0.9,
+        rtimeout: float = 0.85,
         reopen_after_timeouts: int = 10,
         events: Optional[EventHub] = None,
     ):
@@ -869,18 +864,10 @@ class Downstream:
         queue_wait_ms: float = 0.0,
     ) -> bytes:
         resp = b""
-        attempts = (
-            1
-            if is_write or source in {"SHINE", "BACKGROUND"}
-            else 2 if standard_modbus and is_retryable_standard_read(req) else 1
-        )
         physical_latency_ms = 0.0
-        retry_count = 0
         transaction_started = time.monotonic()
         timeout = self.rtimeout
-        for attempt in range(attempts):
-            if not self._ensure_serial():
-                break
+        if self._ensure_serial():
             # Preserve complete asynchronous frames that arrived before this
             # request; only incomplete bytes remain for the response reader.
             assert self.ser is not None
@@ -902,8 +889,8 @@ class Downstream:
                 )
             self.ser.write(req)
             self.ser.flush()
+            physical_started = time.monotonic()
             if standard_modbus:
-                physical_started = time.monotonic()
                 resp = self.framer.read_standard_frame(
                     req,
                     timeout=timeout,
@@ -911,7 +898,6 @@ class Downstream:
                     allow_unit_zero_wildcard=source == "SHINE",
                 )
             else:
-                physical_started = time.monotonic()
                 resp = self.framer.read_matching(
                     lambda frame: (
                         crc_ok(frame)
@@ -922,7 +908,7 @@ class Downstream:
                     timeout=timeout,
                     on_unmatched=lambda frame: self._report_async_frame(req, frame),
                 )
-            physical_latency_ms += (time.monotonic() - physical_started) * 1000
+            physical_latency_ms = (time.monotonic() - physical_started) * 1000
             if resp:
                 self._consecutive_timeouts = 0
             elif standard_modbus:
@@ -930,18 +916,6 @@ class Downstream:
                 if self._consecutive_timeouts >= self._reopen_after_timeouts:
                     self._consecutive_timeouts = 0
                     self._reopen_serial("repeated_timeouts")
-            if resp or attempt + 1 == attempts:
-                break
-            if self.events:
-                self.events.emit(
-                    event="downstream_retry",
-                    role="WARN",
-                    to="INVERTER",
-                    source=source,
-                    from_client=client,
-                    attempt=attempt + 2,
-                )
-            retry_count += 1
         if not resp and self.events:
             self.events.emit(
                 event="downstream_timeout",
@@ -962,7 +936,7 @@ class Downstream:
                 is_write=is_write,
                 queue_wait_ms=round(queue_wait_ms, 3),
                 physical_latency_ms=round(physical_latency_ms, 3),
-                retry_count=retry_count,
+                retry_count=0,
                 total_ms=round((time.monotonic() - transaction_started) * 1000, 3),
             )
             self.events.emit(
@@ -2489,7 +2463,7 @@ def main():
     args.operation_mode = args.operation_mode or "live"
     args.baud = args.baud or 9600
     args.bytes = args.bytes or "8E1"
-    args.rtimeout = args.rtimeout if args.rtimeout is not None else 0.9
+    args.rtimeout = args.rtimeout if args.rtimeout is not None else 0.85
     args.reopen_after_timeouts = (
         args.reopen_after_timeouts if args.reopen_after_timeouts is not None else 10
     )
