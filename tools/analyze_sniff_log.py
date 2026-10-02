@@ -134,7 +134,7 @@ class ClientStats:
     timeout_streak: int = 0
 
 
-KNOWN_FUNCS = {0x03, 0x04, 0x06, 0x10}
+KNOWN_FUNCS = {0x00, 0x03, 0x04, 0x06, 0x10, 0x20, 0xA0}
 
 
 def is_tcp_client(label: Optional[str]) -> bool:

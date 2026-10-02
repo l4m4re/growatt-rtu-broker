@@ -68,6 +68,11 @@ def crc_ok(frame: bytes) -> bool:
     return modbus_crc(frame[:-2]) == int.from_bytes(frame[-2:], "little")
 
 
+def is_zero_function_response(frame: bytes) -> bool:
+    """Return whether the inverter sent a CRC-valid proprietary function-0 frame."""
+    return len(frame) >= 4 and frame[1] == 0 and crc_ok(frame)
+
+
 def standard_response_spec(request: bytes) -> tuple[int, int, int] | None:
     """Return unit, function, and normal response length for standard requests."""
     if len(request) < 8 or not crc_ok(request):
@@ -196,6 +201,18 @@ class RTUFramer:
                         request_length = 9 + data[frame_start + 6]
                         if request_length <= self._MAX_FRAME_LENGTH:
                             lengths.append(request_length)
+                elif function == 0x00:
+                    # Growatt sometimes answers a request with a variable-length
+                    # proprietary function-0 frame.  There is no byte count, so
+                    # search only the bounded resynchronisation window.
+                    if frame_start > 64:
+                        continue
+                    max_length = min(
+                        self._MAX_FRAME_LENGTH,
+                        end_limit - frame_start,
+                    )
+                    lengths = [max_length]
+                    lengths.extend(range(4, max_length))
                 else:
                     # Unknown frames are only a bounded resynchronisation aid.
                     # Startup text and other unframed bytes are not a Modbus frame.
@@ -427,6 +444,10 @@ class RTUFramer:
                 request,
                 allow_unit_zero_wildcard=allow_unit_zero_wildcard,
             )
+            if response is None:
+                found = self._first_crc_frame(buffer)
+                if found is not None and is_zero_function_response(found[2]):
+                    response = found[2]
             if response is not None:
                 response_start = buffer.find(response)
                 report_unmatched_prefix(response_start)
@@ -457,7 +478,7 @@ class RTUFramer:
             frame = self.read_frame(timeout=remaining)
             if not frame:
                 return b""
-            if matcher(frame):
+            if is_zero_function_response(frame) or matcher(frame):
                 return frame
             if on_unmatched is not None:
                 on_unmatched(frame)
@@ -1023,6 +1044,7 @@ class _RefreshState:
     snapshot: RegisterSnapshot | None = None
     error: str | None = None
     exception_response: bytes | None = None
+    zero_response: bytes | None = None
 
 
 class PhysicalModbusException(Exception):
@@ -1031,6 +1053,14 @@ class PhysicalModbusException(Exception):
     def __init__(self, response: bytes) -> None:
         self.response = response
         super().__init__(f"physical Modbus exception: {response.hex()}")
+
+
+class PhysicalZeroResponse(Exception):
+    """A CRC-valid proprietary function-0 response from the inverter."""
+
+    def __init__(self, response: bytes) -> None:
+        self.response = response
+        super().__init__(f"physical function-0 response: {response.hex()}")
 
 
 @dataclass(frozen=True)
@@ -1294,6 +1324,8 @@ class CacheGatewayService:
             raise ValueError("invalid physical read request")
         if not cache_crc_ok(response):
             raise ValueError("physical response CRC invalid")
+        if is_zero_function_response(response):
+            raise PhysicalZeroResponse(response)
         if response[0] != request[0]:
             raise ValueError("physical response does not match request")
         if response[1] == (request[1] | 0x80):
@@ -1466,6 +1498,8 @@ class CacheGatewayService:
                     state.error = str(exc)
                     if isinstance(exc, PhysicalModbusException):
                         state.exception_response = exc.response
+                    elif isinstance(exc, PhysicalZeroResponse):
+                        state.zero_response = exc.response
                     with self._lock:
                         self._last_errors[physical_key] = state.error
                     self._emit(
@@ -1486,6 +1520,8 @@ class CacheGatewayService:
                 return None, "cache refresh wait timeout"
             if state.exception_response is not None:
                 raise PhysicalModbusException(state.exception_response)
+            if state.zero_response is not None:
+                raise PhysicalZeroResponse(state.zero_response)
             if state.error:
                 return None, state.error
 
@@ -1530,6 +1566,27 @@ class CacheGatewayService:
                 client,
                 response=exc.response,
                 reason="physical_exception",
+            )
+        except PhysicalZeroResponse as exc:
+            self._emit(
+                "physical_zero_response",
+                role="INFO",
+                client=client,
+                source=source,
+                **parse_rtu(exc.response),
+            )
+            if client == "SHINE":
+                return GatewayResult(
+                    "served",
+                    client,
+                    response=exc.response,
+                    reason="physical_zero_response",
+                )
+            return GatewayResult(
+                "failed",
+                client,
+                response=self._exception_response(request, 0x0B),
+                reason="physical_zero_response",
             )
         if cached is None:
             return GatewayResult("failed", client, reason=error or "read failed")
@@ -1821,6 +1878,7 @@ class CacheGatewayService:
                 is_write=is_write,
             )
             if response:
+                zero_response = not is_write and is_zero_function_response(response)
                 physical_exception = is_write and self._valid_physical_exception(
                     response,
                     request,
@@ -1836,6 +1894,27 @@ class CacheGatewayService:
                     )
                     is not None
                 )
+                if zero_response:
+                    self._emit(
+                        "physical_zero_response",
+                        role="INFO",
+                        client=client,
+                        source=source,
+                        **parse_rtu(response),
+                    )
+                    if client == "SHINE":
+                        return GatewayResult(
+                            "served",
+                            client,
+                            response=response,
+                            reason="physical_zero_response",
+                        )
+                    return GatewayResult(
+                        "failed",
+                        client,
+                        response=self._exception_response(request, 0x0B),
+                        reason="physical_zero_response",
+                    )
                 if is_write and write_key is not None:
                     self._emit(
                         "on_demand_write_forwarded",

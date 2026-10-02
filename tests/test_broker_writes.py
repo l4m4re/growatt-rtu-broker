@@ -45,6 +45,48 @@ class WriteDownstream:
         return add_crc(bytes([request[0], request[1], count * 2]) + b"\x00\x01" * count)
 
 
+def test_function_zero_read_response_is_not_reported_as_timeout() -> None:
+    class ZeroResponseDownstream(WriteDownstream):
+        def transact(self, request: bytes, **kwargs: object) -> bytes:
+            self.requests.append(request)
+            self.kwargs.append(kwargs)
+            return add_crc(bytes([0, 0]) + bytes(11))
+
+    request = add_crc(bytes.fromhex("010300bc0001"))
+    downstream = ZeroResponseDownstream()
+    result = _gateway(downstream).handle_standard_request(
+        request,
+        client="TCP:dev",
+        source="DEV_TCP",
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "physical_zero_response"
+    assert result.response == add_crc(bytes.fromhex("01830b"))
+    assert downstream.requests
+
+
+def test_function_zero_read_response_is_returned_to_shine() -> None:
+    class ZeroResponseDownstream(WriteDownstream):
+        def transact(self, request: bytes, **kwargs: object) -> bytes:
+            self.requests.append(request)
+            self.kwargs.append(kwargs)
+            return add_crc(bytes([0, 0]) + bytes(11))
+
+    request = add_crc(bytes.fromhex("010300bc0001"))
+    response = add_crc(bytes([0, 0]) + bytes(11))
+    downstream = ZeroResponseDownstream()
+    result = _gateway(downstream).handle_standard_request(
+        request,
+        client="SHINE",
+        source="SHINE",
+    )
+
+    assert result.status == "served"
+    assert result.reason == "physical_zero_response"
+    assert result.response == response
+
+
 def test_fc06_is_physically_written_without_readback() -> None:
     downstream = WriteDownstream()
     gateway = _gateway(downstream)

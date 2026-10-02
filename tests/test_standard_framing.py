@@ -187,6 +187,43 @@ def test_crc_resync_uses_fc20_response_byte_count() -> None:
     assert framer.crc_scan_time_ms >= 0
 
 
+def test_crc_resync_accepts_variable_length_function_zero_frame() -> None:
+    response = add_crc(bytes([0, 0]) + bytes(40))
+    serial = FakeSerial()
+    framer = RTUFramer(serial, char_time=0.001)
+
+    assert framer._first_crc_frame(response) == (0, len(response), response)
+
+
+def test_standard_reader_returns_function_zero_response() -> None:
+    request_frame = add_crc(bytes.fromhex("012000000064"))
+    response = add_crc(bytes([0, 0]) + bytes(11))
+    serial = FakeSerial()
+    serial.feed(response)
+    framer = RTUFramer(serial, char_time=0.001)
+    observed: list[bytes] = []
+
+    assert (
+        framer.read_standard_frame(
+            request_frame,
+            timeout=0.2,
+            on_unmatched=observed.append,
+        )
+        == response
+    )
+    assert observed == []
+
+
+def test_matching_reader_returns_function_zero_response() -> None:
+    request_frame = add_crc(bytes.fromhex("012100000001"))
+    response = add_crc(bytes([0, 0, 1, 2, 3, 4, 5]))
+    serial = FakeSerial()
+    serial.feed(response)
+    framer = RTUFramer(serial, char_time=0.001)
+
+    assert framer.read_matching(lambda _frame: False, timeout=0.2) == response
+
+
 def test_fc20_request_uses_standard_reader() -> None:
     req = add_crc(bytes.fromhex("012000000001"))
     response = add_crc(bytes.fromhex("0120020001"))

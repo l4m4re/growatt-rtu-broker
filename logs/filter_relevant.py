@@ -30,7 +30,7 @@ ASYNC_EVENTS = {
     "shine_unframed_bytes",
 }
 
-KNOWN_FUNCTIONS = {0x03, 0x04, 0x06, 0x10, 0x20}
+KNOWN_FUNCTIONS = {0x00, 0x03, 0x04, 0x06, 0x10, 0x20, 0xA0}
 ERROR_EVENT_PARTS = (
     "error",
     "exception",
@@ -86,8 +86,8 @@ def classify(item: dict) -> str | None:
         return "async_error" if event_is_error(item) else "async"
     if event in WRITE_EVENTS or is_write:
         return "write_error" if event_is_error(item) else "write"
-    if function == 0x20:
-        return "fc20_error" if event_is_error(item) else "fc20"
+    if function in (0x20, 0xA0):
+        return "fc20_error" if function == 0xA0 or event_is_error(item) else "fc20"
     if function is not None and function not in KNOWN_FUNCTIONS:
         return "unknown_function_error" if event_is_error(item) else "unknown_function"
     if event_is_error(item):
