@@ -51,14 +51,14 @@ class TransportConfig:
 class RuntimeConfig:
     """Serial scheduler settings for one installation."""
 
-    rtimeout_s: float = 0.85
+    rtimeout_s: float = 0.35
     reopen_after_timeouts: int = 10
 
     @classmethod
     def from_dict(cls, value: dict[str, Any] | None) -> "RuntimeConfig":
         value = value or {}
         try:
-            rtimeout_s = float(value.get("rtimeout_s", 0.85))
+            rtimeout_s = float(value.get("rtimeout_s", 0.35))
             reopen_after_timeouts = int(value.get("reopen_after_timeouts", 10))
         except (TypeError, ValueError) as exc:
             raise ConfigurationError(f"invalid runtime settings: {value!r}") from exc

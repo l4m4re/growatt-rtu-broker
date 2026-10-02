@@ -22,7 +22,7 @@
   "name": "Growatt MIN 6000TL-XH + ShineWiLan-X2 (current firmware)",
   "operation_mode": "live",
   "runtime": {
-    "rtimeout_s": 0.85,
+    "rtimeout_s": 0.35,
     "reopen_after_timeouts": 10
   },
   "poll_plan": [

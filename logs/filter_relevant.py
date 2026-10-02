@@ -6,6 +6,7 @@ ordinary cached and physical reads, while retaining writes and their responses,
 non-standard functions, unsolicited serial traffic, and failures.
 """
 
+import argparse
 import json
 import sys
 from datetime import datetime, timezone
@@ -45,6 +46,15 @@ ERROR_EVENT_PARTS = (
 )
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--exclude-fc20",
+    action="store_true",
+    help="Exclude FC20 and proprietary function-A0 events from the capture",
+)
+options = parser.parse_args()
+
+
 def frame_function(item: dict) -> int | None:
     value = item.get("func", item.get("function"))
     if isinstance(value, int):
@@ -80,6 +90,8 @@ def event_is_error(item: dict) -> bool:
 def classify(item: dict) -> str | None:
     event = item.get("event")
     function = frame_function(item)
+    if options.exclude_fc20 and function in (0x20, 0xA0):
+        return None
     is_write = bool(item.get("is_write")) or function in (0x06, 0x10)
 
     if event in ASYNC_EVENTS:
@@ -108,6 +120,7 @@ print(
                 "async_frames",
                 "errors",
             ],
+            "excluded_functions": [32, 160] if options.exclude_fc20 else [],
         },
         separators=(",", ":"),
     ),

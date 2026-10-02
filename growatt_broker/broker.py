@@ -425,9 +425,7 @@ class RTUFramer:
                 else:
                     if frame_start > 64:
                         continue
-                    lengths.extend(
-                        range(4, min(32, end_limit - frame_start) + 1)
-                    )
+                    lengths.extend(range(4, min(32, end_limit - frame_start) + 1))
                 for frame_length in lengths:
                     frame_end = frame_start + frame_length
                     if frame_end <= end_limit:
@@ -512,7 +510,6 @@ class RTUFramer:
                 return frame
             if on_unmatched is not None:
                 on_unmatched(frame)
-
 
 
 def now_iso() -> str:
@@ -693,7 +690,7 @@ class Downstream:
         baud: int,
         fmt: str,
         *,
-        rtimeout: float = 0.85,
+        rtimeout: float = 0.35,
         reopen_after_timeouts: int = 10,
         events: Optional[EventHub] = None,
     ):
@@ -1424,7 +1421,9 @@ class CacheGatewayService:
         return snapshot
 
     def _write_priority(self, source: str) -> int:
-        return Downstream._WRITE_PRIORITIES.get(source, len(Downstream._WRITE_PRIORITIES))
+        return Downstream._WRITE_PRIORITIES.get(
+            source, len(Downstream._WRITE_PRIORITIES)
+        )
 
     def _acquire_write_slot(self, source: str) -> None:
         """Queue a write ticket so production wins over development and Shine."""
@@ -1662,11 +1661,7 @@ class CacheGatewayService:
                 policy = self._policy_by_key.get(key)
                 if policy is None:
                     continue
-                due_at = (
-                    now
-                    if immediate
-                    else now
-                )
+                due_at = now if immediate else now
                 self._next_due[key] = due_at
                 scheduled.append(
                     {
@@ -1894,9 +1889,7 @@ class CacheGatewayService:
                 return GatewayResult(
                     "failed", client, response=response, reason="write_denied"
                 )
-            self._invalidate_before_write(
-                write_key, client=client, source=source
-            )
+            self._invalidate_before_write(write_key, client=client, source=source)
             self._acquire_write_slot(source)
         try:
             response = self.downstream.transact(
@@ -1973,16 +1966,14 @@ class CacheGatewayService:
                             "physical_exception"
                             if physical_exception
                             else (
-                            "on_demand"
+                                "on_demand"
                                 if write_ack
                                 else "invalid_physical_write_response"
                             )
                         )
                     ),
                 )
-            return GatewayResult(
-                "failed", client, reason="on-demand timeout"
-            )
+            return GatewayResult("failed", client, reason="on-demand timeout")
         finally:
             if is_write:
                 self._release_write_slot()
@@ -2019,7 +2010,9 @@ class CacheGatewayService:
             now=now,
         )
 
-    def _oldest_background_target(self, now: float) -> tuple[str, CachePolicy | None, float] | None:
+    def _oldest_background_target(
+        self, now: float
+    ) -> tuple[str, CachePolicy | None, float] | None:
         """Choose the stalest configured block once it reaches the target age."""
         with self._lock:
             snapshots = {snapshot.key: snapshot for snapshot in self.cache.snapshots()}
@@ -2036,12 +2029,18 @@ class CacheGatewayService:
             if now < next_due.get(policy.key, 0.0):
                 continue
             snapshot = snapshots.get(policy.key)
-            age = float("inf") if snapshot is None else max(0.0, now - snapshot.captured_at)
+            age = (
+                float("inf")
+                if snapshot is None
+                else max(0.0, now - snapshot.captured_at)
+            )
             if age >= self._background_target_age(policy):
                 candidates.append((age, policy.priority, "standard", policy))
         if not candidates:
             return None
-        age, _priority, kind, policy = max(candidates, key=lambda item: (item[0], -item[1]))
+        age, _priority, kind, policy = max(
+            candidates, key=lambda item: (item[0], -item[1])
+        )
         return kind, policy, age
 
     def _next_background_deadline(self, now: float) -> float | None:
@@ -2278,17 +2277,15 @@ class ShineEndpoint(threading.Thread):
 
                 function = req[1]
                 is_write = function in (0x06, 0x10)
-                write_key = (
-                    CacheGatewayService._write_key(req)
-                    if is_write
-                    else None
-                )
+                write_key = CacheGatewayService._write_key(req) if is_write else None
                 writes_allowed = not is_write or (
                     write_key is not None
                     and self.write_policy.allows("SHINE", write_key)
                 )
                 disposition = "forwarded" if writes_allowed else "write_denied"
-                standard_request = writes_allowed and standard_response_spec(req) is not None
+                standard_request = (
+                    writes_allowed and standard_response_spec(req) is not None
+                )
 
                 if self.events:
                     self.events.emit(
@@ -2312,10 +2309,7 @@ class ShineEndpoint(threading.Thread):
                     if (
                         result.status == "failed"
                         and not resp
-                        and not (
-                            result.reason
-                            and result.reason.endswith("timeout")
-                        )
+                        and not (result.reason and result.reason.endswith("timeout"))
                     ):
                         resp = add_crc(bytes([req[0], function | 0x80, 0x0B]))
                     if self.events:
@@ -2648,7 +2642,7 @@ def main():
         else (
             installation_config.runtime.rtimeout_s
             if installation_config is not None
-            else 0.85
+            else 0.35
         )
     )
     args.reopen_after_timeouts = (
