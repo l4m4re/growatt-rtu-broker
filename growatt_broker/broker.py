@@ -48,13 +48,18 @@ from .configuration import (
 )
 
 
+def _modbus_crc_byte(crc: int, value: int) -> int:
+    crc ^= value
+    for _ in range(8):
+        crc = (crc >> 1) ^ 0xA001 if (crc & 1) else (crc >> 1)
+    return crc & 0xFFFF
+
+
 def modbus_crc(data: bytes) -> int:
     crc = 0xFFFF
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            crc = (crc >> 1) ^ 0xA001 if (crc & 1) else (crc >> 1)
-    return crc & 0xFFFF
+    for value in data:
+        crc = _modbus_crc_byte(crc, value)
+    return crc
 
 
 def add_crc(body: bytes) -> bytes:
@@ -182,25 +187,25 @@ class RTUFramer:
                 if frame_start + 1 >= end_limit:
                     break
                 function = data[frame_start + 1]
-                lengths: list[int]
+                candidate_lengths: list[int]
                 if function & 0x80:
-                    lengths = [5]
+                    candidate_lengths = [5]
                 elif function in (0x03, 0x04, 0x20):
                     # Requests are eight bytes; responses carry a byte count.
-                    lengths = [8]
+                    candidate_lengths = [8]
                     if frame_start + 2 < end_limit:
                         response_length = 5 + data[frame_start + 2]
                         if response_length <= self._MAX_FRAME_LENGTH:
-                            lengths.append(response_length)
+                            candidate_lengths.append(response_length)
                 elif function == 0x06:
-                    lengths = [8]
+                    candidate_lengths = [8]
                 elif function == 0x10:
                     # FC10 responses are eight bytes; requests carry a byte count.
-                    lengths = [8]
+                    candidate_lengths = [8]
                     if frame_start + 6 < end_limit:
                         request_length = 9 + data[frame_start + 6]
                         if request_length <= self._MAX_FRAME_LENGTH:
-                            lengths.append(request_length)
+                            candidate_lengths.append(request_length)
                 elif function == 0x00:
                     # Growatt sometimes answers a request with a variable-length
                     # proprietary function-0 frame.  There is no byte count, so
@@ -211,14 +216,14 @@ class RTUFramer:
                         self._MAX_FRAME_LENGTH,
                         end_limit - frame_start,
                     )
-                    lengths = [max_length]
-                    lengths.extend(range(4, max_length))
+                    candidate_lengths = [max_length]
+                    candidate_lengths.extend(range(4, max_length))
                 else:
                     # Unknown frames are only a bounded resynchronisation aid.
                     # Startup text and other unframed bytes are not a Modbus frame.
                     if frame_start > 64:
                         continue
-                    lengths = list(
+                    candidate_lengths = list(
                         range(
                             4,
                             min(
@@ -228,13 +233,38 @@ class RTUFramer:
                             + 1,
                         )
                     )
-                for frame_length in lengths:
+                valid_lengths = [
+                    frame_length
+                    for frame_length in candidate_lengths
+                    if 4 <= frame_length <= end_limit - frame_start
+                ]
+                if not valid_lengths:
+                    continue
+
+                # Build one CRC state per possible frame start.  The two bytes
+                # after each body are then compared with that state in the
+                # original candidate order.
+                max_body_length = max(valid_lengths) - 2
+                length_set = set(valid_lengths)
+                crc = 0xFFFF
+                crc_by_length: dict[int, int] = {}
+                for body_length in range(1, max_body_length + 1):
+                    crc = _modbus_crc_byte(
+                        crc,
+                        data[frame_start + body_length - 1],
+                    )
+                    frame_length = body_length + 2
+                    if frame_length in length_set:
+                        crc_by_length[frame_length] = crc
+
+                for frame_length in valid_lengths:
                     frame_end = frame_start + frame_length
-                    if frame_end > end_limit:
-                        continue
-                    candidate = data[frame_start:frame_end]
-                    if crc_ok(candidate):
-                        return frame_start, frame_end, candidate
+                    expected_crc = int.from_bytes(
+                        data[frame_end - 2 : frame_end],
+                        "little",
+                    )
+                    if crc_by_length[frame_length] == expected_crc:
+                        return frame_start, frame_end, data[frame_start:frame_end]
             return None
         finally:
             self._crc_scan_time_ms += (time.perf_counter() - started) * 1000
