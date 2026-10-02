@@ -62,7 +62,7 @@ def test_function_zero_read_response_is_not_reported_as_timeout() -> None:
 
     assert result.status == "failed"
     assert result.reason == "physical_zero_response"
-    assert result.response == add_crc(bytes.fromhex("01830b"))
+    assert result.response is None
     assert downstream.requests
 
 
@@ -217,7 +217,7 @@ def test_write_policy_can_disable_shine_source() -> None:
     assert downstream.requests == []
 
 
-def test_write_timeout_returns_gateway_exception_without_fake_success() -> None:
+def test_write_timeout_returns_no_synthetic_response() -> None:
     request = add_crc(bytes.fromhex("010600bc0001"))
     downstream = WriteDownstream(fail_write=request)
     gateway = _gateway(downstream)
@@ -226,7 +226,7 @@ def test_write_timeout_returns_gateway_exception_without_fake_success() -> None:
 
     assert result.status == "failed"
     assert result.reason == "physical_timeout"
-    assert result.response == add_crc(bytes.fromhex("01860b"))
+    assert result.response is None
     assert downstream.requests == [request]
 
 

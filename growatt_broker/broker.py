@@ -1585,7 +1585,6 @@ class CacheGatewayService:
             return GatewayResult(
                 "failed",
                 client,
-                response=self._exception_response(request, 0x0B),
                 reason="physical_zero_response",
             )
         if cached is None:
@@ -1751,7 +1750,7 @@ class CacheGatewayService:
             client_response: bytes
             physical_success = False
             if not response:
-                client_response = self._exception_response(request, 0x0B)
+                client_response = b""
                 write_reason = "physical_timeout"
                 self._emit(
                     "tcp_write_failed",
@@ -1832,7 +1831,10 @@ class CacheGatewayService:
                     reason="physical_write_acknowledged",
                 )
             return GatewayResult(
-                "failed", client, response=client_response, reason=write_reason
+                "failed",
+                client,
+                response=client_response or None,
+                reason=write_reason,
             )
         finally:
             self._release_write_slot()
@@ -1912,7 +1914,6 @@ class CacheGatewayService:
                     return GatewayResult(
                         "failed",
                         client,
-                        response=self._exception_response(request, 0x0B),
                         reason="physical_zero_response",
                     )
                 if is_write and write_key is not None:
@@ -2281,7 +2282,10 @@ class ShineEndpoint(threading.Thread):
                     if (
                         result.status == "failed"
                         and not resp
-                        and not (result.reason and result.reason.startswith("physical"))
+                        and not (
+                            result.reason
+                            and result.reason.endswith("timeout")
+                        )
                     ):
                         resp = add_crc(bytes([req[0], function | 0x80, 0x0B]))
                     if self.events:
