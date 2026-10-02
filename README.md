@@ -79,19 +79,19 @@ Use `growatt-broker --help` for the live command's complete option list.
 ## Installation configurations and setup mode
 
 An installation configuration is one reviewable JSON file containing the
-inverter/logger identification, serial settings, and complete native poll
-plan. Example configurations are in
+inverter/logger identification, serial settings, RTU runtime settings, and
+complete native poll plan. Example configurations are in
 [`configs/examples/`](configs/examples/). The old ShineWiFi-X and current
 ShineWiLan-X2 examples deliberately omit device serial numbers. Setup mode
 uses disabled writes; the reviewed live profiles demonstrate the explicit
 enabled settings.
 
 The same file controls write policy for the production TCP listener, the
-development TCP listener, and Shine. Use `"disabled"` for a client when setup
-or a canary must not forward its writes.
-The older Docker environment variables (`PROD_TCP_WRITES`,
-`DEV_TCP_WRITES`, and `SHINE_POLICY`) remain command-line overrides for
-deployments that have not migrated to an installation file.
+development TCP listener, and Shine. It also controls the physical RTU
+timeout and serial reopen threshold through `runtime`. Use `"disabled"` for a
+client when setup or a canary must not forward its writes. When
+`docker/run_broker.sh` receives `CONFIG_PATH`, it does not pass command-line
+overrides for these installation settings.
 
 Live mode uses the approved plan without changing it:
 
@@ -155,8 +155,9 @@ fixture; it is not a Home Assistant runtime dependency.
 
 ## Hardware deployment
 
-Copy `.env.example` to `.env` and replace the device aliases with the aliases
-on the target Pi:
+For the PiITM deployment, set `CONFIG_PATH` to one reviewed installation JSON
+and keep the serial, timeout, and write-policy settings in that file. The
+following values are only the no-config fallback for isolated CLI tests:
 
 ```ini
 INV_DEV=/dev/serial/by-path/<inverter-port>

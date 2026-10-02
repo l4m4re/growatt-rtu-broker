@@ -2642,9 +2642,23 @@ def main():
     args.operation_mode = args.operation_mode or "live"
     args.baud = args.baud or 9600
     args.bytes = args.bytes or "8E1"
-    args.rtimeout = args.rtimeout if args.rtimeout is not None else 0.85
+    args.rtimeout = (
+        args.rtimeout
+        if args.rtimeout is not None
+        else (
+            installation_config.runtime.rtimeout_s
+            if installation_config is not None
+            else 0.85
+        )
+    )
     args.reopen_after_timeouts = (
-        args.reopen_after_timeouts if args.reopen_after_timeouts is not None else 10
+        args.reopen_after_timeouts
+        if args.reopen_after_timeouts is not None
+        else (
+            installation_config.runtime.reopen_after_timeouts
+            if installation_config is not None
+            else 10
+        )
     )
     configured_writes = installation_config.write_policy if installation_config else {}
     args.shine_policy = args.shine_policy or configured_writes.get("shine", "disabled")

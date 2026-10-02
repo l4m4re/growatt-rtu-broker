@@ -4,6 +4,10 @@
   "source": "observed-and-reviewed",
   "mode": "cache+shine",
   "operation_mode": "live",
+  "runtime": {
+    "rtimeout_s": 0.85,
+    "reopen_after_timeouts": 10
+  },
   "inverter": {
     "vendor": "Growatt",
     "model": "MIN 6000TL-XH",

@@ -33,29 +33,22 @@ cd /share/growatt-rtu-broker
 cp .env.example .env
 ```
 
-Set at least:
+Select one reviewed installation configuration, for example:
 
 ```ini
-INV_DEV=/dev/serial/by-path/<inverter-port>
-SHINE_DEV=/dev/serial/by-path/<shine-x2-port>
-BROKER_MODE=cache+shine
-INV_BAUD=115200
-INV_BYTES=8N1
-SHINE_BAUD=115200
-SHINE_BYTES=8N1
-RTIMEOUT=0.9
+CONFIG_PATH=/share/growatt-rtu-broker/configs/examples/growatt-min6000tl-xh-shinewilan-x2.json
 TCP_BIND=0.0.0.0:5020
 TCP_ALT_BIND=0.0.0.0:5021
 SNIFF_BIND=0.0.0.0:5700
-PROD_TCP_WRITES=enabled
-DEV_TCP_WRITES=enabled
 LOG_PATH=-
 HOTPLUG_DEVICES=1
 ```
 
-The values above are the 2026-09-25 reference profile. Start with the
-known-good deployment values for the actual inverter and Shine firmware;
-The RTU timeout and background polling cadence are separate concepts.
+The installation JSON is the source of truth for the inverter and Shine
+paths, baud rates, serial formats, RTU timeout, reopen threshold, write
+policies, mode, and poll plan. The helper does not override those values when
+`CONFIG_PATH` is set. The RTU timeout and background polling cadence are
+separate concepts.
 
 For an installation whose Shine poll set is not yet known, use the X2 example
 in setup mode. The reviewed X2 profile contains the complete FC03 and FC04

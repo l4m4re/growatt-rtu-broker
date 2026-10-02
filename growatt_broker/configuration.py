@@ -48,6 +48,32 @@ class TransportConfig:
 
 
 @dataclass(frozen=True)
+class RuntimeConfig:
+    """Serial scheduler settings for one installation."""
+
+    rtimeout_s: float = 0.85
+    reopen_after_timeouts: int = 10
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any] | None) -> "RuntimeConfig":
+        value = value or {}
+        try:
+            rtimeout_s = float(value.get("rtimeout_s", 0.85))
+            reopen_after_timeouts = int(value.get("reopen_after_timeouts", 10))
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError(f"invalid runtime settings: {value!r}") from exc
+        if rtimeout_s <= 0 or reopen_after_timeouts < 1:
+            raise ConfigurationError(f"invalid runtime settings: {value!r}")
+        return cls(rtimeout_s, reopen_after_timeouts)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rtimeout_s": self.rtimeout_s,
+            "reopen_after_timeouts": self.reopen_after_timeouts,
+        }
+
+
+@dataclass(frozen=True)
 class PollBlockConfig:
     """One complete physical register block in an installation plan."""
 
@@ -143,6 +169,7 @@ class InstallationConfig:
     operation_mode: str = "live"
     source: str = "manual"
     schema: int = 1
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     write_policy: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -183,6 +210,9 @@ class InstallationConfig:
                 raise ConfigurationError(
                     f"invalid write_policy value: {name}={setting}"
                 )
+        raw_runtime = value.get("runtime", {})
+        if not isinstance(raw_runtime, dict):
+            raise ConfigurationError("runtime must be an object")
         return cls(
             name=str(value.get("name", "installation")),
             inverter=dict(value.get("inverter", {})),
@@ -198,6 +228,7 @@ class InstallationConfig:
             operation_mode=operation_mode,
             source=str(value.get("source", "manual")),
             schema=1,
+            runtime=RuntimeConfig.from_dict(raw_runtime),
             write_policy=write_policy,
             metadata=dict(value.get("metadata", {})),
         )
@@ -236,6 +267,7 @@ class InstallationConfig:
             "source": self.source,
             "mode": self.mode,
             "operation_mode": self.operation_mode,
+            "runtime": self.runtime.to_dict(),
             "inverter": self.inverter,
             "logger": self.logger,
             "write_policy": self.write_policy,
@@ -261,6 +293,7 @@ class InstallationConfig:
             operation_mode="live",
             source=source,
             schema=self.schema,
+            runtime=self.runtime,
             write_policy=dict(self.write_policy),
             metadata=dict(self.metadata),
         )

@@ -118,23 +118,32 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
   fi
 fi
 
-# Build the full docker run command (for visibility)
-DOCKER_CMD=(docker run -d "${DOCKER_ARGS[@]}" growatt-rtu-broker:local \
-  growatt-broker --inverter "${INVERTER_ARG}" \
-    --baud "${INV_BAUD:-${BAUD:-115200}}" --bytes "${INV_BYTES:-${BYTES:-8N1}}" \
-    --tcp "${TCP_BIND:-0.0.0.0:5020}" --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}" --sniff "${SNIFF_BIND:-0.0.0.0:5700}" \
-    --rtimeout "${RTIMEOUT:-0.9}" \
-    --shine-policy "${SHINE_POLICY:-disabled}" \
-    --prod-tcp-writes "${PROD_TCP_WRITES:-enabled}" \
-    --dev-tcp-writes "${DEV_TCP_WRITES:-enabled}" \
-    --log "${LOG_PATH:--}" \
-    --mode "${BROKER_MODE}")
-
+# Build the full docker run command (for visibility). An installation config
+# owns installation settings; environment values below are only the no-config
+# CLI fallback used for isolated tests.
+DOCKER_CMD=(docker run -d "${DOCKER_ARGS[@]}" growatt-rtu-broker:local growatt-broker)
 if [ -n "${CONFIG_PATH}" ]; then
   DOCKER_CMD+=(--config "${CONFIG_CONTAINER_PATH}")
+else
+  DOCKER_CMD+=(
+    --inverter "${INVERTER_ARG}"
+    --baud "${INV_BAUD:-${BAUD:-115200}}"
+    --bytes "${INV_BYTES:-${BYTES:-8N1}}"
+    --mode "${BROKER_MODE}"
+    --rtimeout "${RTIMEOUT:-0.9}"
+    --shine-policy "${SHINE_POLICY:-disabled}"
+    --prod-tcp-writes "${PROD_TCP_WRITES:-enabled}"
+    --dev-tcp-writes "${DEV_TCP_WRITES:-enabled}"
+  )
 fi
+DOCKER_CMD+=(
+  --tcp "${TCP_BIND:-0.0.0.0:5020}"
+  --tcp-alt "${TCP_ALT_BIND:-0.0.0.0:5021}"
+  --sniff "${SNIFF_BIND:-0.0.0.0:5700}"
+  --log "${LOG_PATH:--}"
+)
 
-if [ -n "${OPERATION_MODE:-}" ]; then
+if [ -n "${OPERATION_MODE:-}" ] && [ -z "${CONFIG_PATH}" ]; then
   DOCKER_CMD+=(--operation-mode "${OPERATION_MODE}")
 fi
 
@@ -142,7 +151,7 @@ if [ -n "${SETUP_EXPORT_PATH}" ]; then
   DOCKER_CMD+=(--setup-export "${SETUP_EXPORT_CONTAINER_PATH}")
 fi
 
-if [ "${SHINE_CONFIGURED}" -eq 1 ]; then
+if [ "${SHINE_CONFIGURED}" -eq 1 ] && [ -z "${CONFIG_PATH}" ]; then
   DOCKER_CMD+=(--shine "${SHINE_ARG}" \
     --shine-baud "${SHINE_BAUD:-${BAUD:-115200}}" \
     --shine-bytes "${SHINE_BYTES:-${BYTES:-8N1}}")

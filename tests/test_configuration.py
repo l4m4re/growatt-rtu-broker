@@ -30,9 +30,25 @@ def test_installation_config_round_trips_atomically(tmp_path: Path) -> None:
     loaded = load_installation_config(path)
     assert loaded.name == "Growatt MIN 6000TL-XH + ShineWiFi-X (old firmware)"
     assert loaded.inverter_transport.baud == 115200
+    assert loaded.runtime.rtimeout_s == 0.85
+    assert loaded.runtime.reopen_after_timeouts == 10
     assert loaded.write_policy["shine"] == "enabled"
     assert loaded.poll_plan[0].key == RegisterKey(4, 3000, 125)
     assert json.loads(path.read_text(encoding="utf-8"))["schema"] == 1
+
+
+def test_runtime_settings_are_loaded_from_configuration() -> None:
+    base = _base_config().to_dict()
+    base["runtime"] = {"rtimeout_s": 0.35, "reopen_after_timeouts": 12}
+
+    config = InstallationConfig.from_dict(base)
+
+    assert config.runtime.rtimeout_s == 0.35
+    assert config.runtime.reopen_after_timeouts == 12
+    assert config.to_dict()["runtime"] == {
+        "rtimeout_s": 0.35,
+        "reopen_after_timeouts": 12,
+    }
 
 
 def test_current_x2_profile_uses_opportunistic_cache_age() -> None:
