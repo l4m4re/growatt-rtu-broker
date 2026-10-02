@@ -178,6 +178,15 @@ def test_fc20_request_has_deterministic_response_spec() -> None:
     assert standard_response_spec(req) == (1, 0x20, 7)
 
 
+def test_crc_resync_uses_fc20_response_byte_count() -> None:
+    response = add_crc(bytes([1, 0x20, 200]) + bytes(200))
+    serial = FakeSerial()
+    framer = RTUFramer(serial, char_time=0.001)
+
+    assert framer._first_crc_frame(b"\x55" + response) == (1, 206, response)
+    assert framer.crc_scan_time_ms >= 0
+
+
 def test_fc20_request_uses_standard_reader() -> None:
     req = add_crc(bytes.fromhex("012000000001"))
     response = add_crc(bytes.fromhex("0120020001"))

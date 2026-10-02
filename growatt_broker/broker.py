@@ -125,6 +125,10 @@ def find_standard_response(
 
 
 class RTUFramer:
+    _MAX_RESYNC_BYTES = 512
+    _MAX_FRAME_LENGTH = 255
+    _UNKNOWN_FRAME_LENGTH = 32
+
     def __init__(
         self,
         ser: serial.Serial,
@@ -145,18 +149,78 @@ class RTUFramer:
         self.last = time.perf_counter()
         self.on_unframed = on_unframed
         self.resync = resync
+        self._crc_scan_time_ms = 0.0
+
+    def reset_scan_metrics(self) -> None:
+        self._crc_scan_time_ms = 0.0
+
+    @property
+    def crc_scan_time_ms(self) -> float:
+        return self._crc_scan_time_ms
 
     def _first_crc_frame(
         self,
         data: bytes,
     ) -> tuple[int, int, bytes] | None:
-        starts = range(len(data) - 3) if self.resync else (0,)
-        for frame_start in starts:
-            for frame_end in range(frame_start + 4, len(data) + 1):
-                candidate = data[frame_start:frame_end]
-                if crc_ok(candidate):
-                    return frame_start, frame_end, candidate
-        return None
+        """Find the first bounded, structurally plausible CRC-valid frame.
+
+        Known Modbus functions have either a fixed frame size or a byte count
+        from which the exact size can be derived.  The old implementation
+        tested every possible end position, which made a malformed input
+        buffer an unbounded CRC search on the scheduler thread.
+        """
+        started = time.perf_counter()
+        try:
+            end_limit = min(len(data), self._MAX_RESYNC_BYTES)
+            starts = range(end_limit - 3) if self.resync else (0,)
+            for frame_start in starts:
+                if frame_start + 1 >= end_limit:
+                    break
+                function = data[frame_start + 1]
+                lengths: list[int]
+                if function & 0x80:
+                    lengths = [5]
+                elif function in (0x03, 0x04, 0x20):
+                    # Requests are eight bytes; responses carry a byte count.
+                    lengths = [8]
+                    if frame_start + 2 < end_limit:
+                        response_length = 5 + data[frame_start + 2]
+                        if response_length <= self._MAX_FRAME_LENGTH:
+                            lengths.append(response_length)
+                elif function == 0x06:
+                    lengths = [8]
+                elif function == 0x10:
+                    # FC10 responses are eight bytes; requests carry a byte count.
+                    lengths = [8]
+                    if frame_start + 6 < end_limit:
+                        request_length = 9 + data[frame_start + 6]
+                        if request_length <= self._MAX_FRAME_LENGTH:
+                            lengths.append(request_length)
+                else:
+                    # Unknown frames are only a bounded resynchronisation aid.
+                    # Startup text and other unframed bytes are not a Modbus frame.
+                    if frame_start > 64:
+                        continue
+                    lengths = list(
+                        range(
+                            4,
+                            min(
+                                self._UNKNOWN_FRAME_LENGTH,
+                                end_limit - frame_start,
+                            )
+                            + 1,
+                        )
+                    )
+                for frame_length in lengths:
+                    frame_end = frame_start + frame_length
+                    if frame_end > end_limit:
+                        continue
+                    candidate = data[frame_start:frame_end]
+                    if crc_ok(candidate):
+                        return frame_start, frame_end, candidate
+            return None
+        finally:
+            self._crc_scan_time_ms += (time.perf_counter() - started) * 1000
 
     def _report_unframed(self, data: bytes, reason: str) -> None:
         if data and self.on_unframed is not None:
@@ -866,6 +930,7 @@ class Downstream:
         resp = b""
         physical_latency_ms = 0.0
         transaction_started = time.monotonic()
+        self.framer.reset_scan_metrics()
         timeout = self.rtimeout
         if self._ensure_serial():
             # Preserve complete asynchronous frames that arrived before this
@@ -936,6 +1001,7 @@ class Downstream:
                 is_write=is_write,
                 queue_wait_ms=round(queue_wait_ms, 3),
                 physical_latency_ms=round(physical_latency_ms, 3),
+                frame_scan_ms=round(self.framer.crc_scan_time_ms, 3),
                 retry_count=0,
                 total_ms=round((time.monotonic() - transaction_started) * 1000, 3),
             )
