@@ -105,6 +105,11 @@ for register names or inverter semantics.
 
 ### 6. Firmware-update transport safety gate
 
+This gate concerns Growatt inverter firmware transferred by the stock Shine
+through PiITM to the inverter. Updating the PiITM software/container on the
+Raspberry Pi is a separate deployment-and-rollback operation covered by
+section 2.
+
 Before practical use of a firmware update through a Shine/PiITM path, first
 separate Shine logger OTA traffic from inverter firmware programming carried
 over the serial link. Reconstruct the relevant message sequence, block
@@ -112,6 +117,20 @@ ordering, integrity checks, acknowledgements, timeouts, retries, aborts, and
 recovery from offline firmware analysis and captured transactions. Treat
 unknown update frames as opaque evidence; do not claim successful update
 semantics from Modbus acknowledgements alone.
+
+Use the Home Assistant `growatt_modbus.export_register_dump` action as a
+read-only pre-update baseline and post-update diagnostic where useful. Its
+lessons apply: keep broad vendor and firmware-derived ranges opt-in, explicitly
+choose a block size the target can carry (the service defaults to 125 and only
+inherits the entry's configured maximum when `block_size` is omitted), use the
+selected entry's configured inter-request pacing where available, retain zeros
+and per-range failures, and record the scan identity and settings. The standard
+reader can fall back to single-register reads after a failed block probe, which
+can greatly increase bus traffic and scan duration. A full scan can issue many
+serial transactions and must never overlap an update session. The action's
+exclusive lock pauses Growatt coordinators sharing its HA connection hub; it
+does not exclude Shine traffic, PiITM cache polling, or other broker clients,
+so it is not an update-safety lock.
 
 The broker must then have an explicit update-transport policy that prevents
 cache replies, request reordering, interleaving, or automatic retries from
@@ -123,10 +142,27 @@ any hardware trial. Add trace events that record transaction phase and
 integrity result while excluding firmware payloads and credentials from
 ordinary logs.
 
+The practical-use gate passes only when a captured complete update session can
+be replayed and fault-injected offline; the broker demonstrates exclusive
+ownership of the inverter link for the session; interrupted, ambiguous, or
+integrity-failing exchanges cannot be reported as successful; and the recovery
+procedure and independent post-update version check are documented and
+reproducible. Generic retries are forbidden until their exact update-protocol
+semantics are established. A read-only scan, portal success indication, or
+Modbus acknowledgement alone does not satisfy the gate.
+
 Any physical update trial requires a separately approved, attended test
 window, a device-specific vendor image and rollback/recovery procedure, a
 pre-update identity/version check, and a way to verify the resulting version.
-The test operator must be able to stop the process. No unattended production
+Record the image source and hash, verify any vendor signature that is provided,
+and confirm compatibility with the exact inverter model, hardware revision,
+and starting firmware. The recovery route must be validated for that target
+and transport, with the required tools and image available before starting; if
+recovery from an interrupted update cannot be established, the path is not
+ready for practical use. Do not deliberately interrupt a production update
+only to test recovery. The test operator must remain present and able to stop
+the process; capture a read-only baseline beforehand and run any full
+diagnostic scan only outside the transfer window. No unattended production
 firmware update is in scope. No firmware update or RPi deployment is currently
 authorized by this roadmap item.
 
