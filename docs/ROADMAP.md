@@ -103,6 +103,33 @@ for register names or inverter semantics.
   firmware, and source capture are recorded;
 - leave VPP and register interpretation to the Growatt register projects.
 
+### 6. Firmware-update transport safety gate
+
+Before practical use of a firmware update through a Shine/PiITM path, first
+separate Shine logger OTA traffic from inverter firmware programming carried
+over the serial link. Reconstruct the relevant message sequence, block
+ordering, integrity checks, acknowledgements, timeouts, retries, aborts, and
+recovery from offline firmware analysis and captured transactions. Treat
+unknown update frames as opaque evidence; do not claim successful update
+semantics from Modbus acknowledgements alone.
+
+The broker must then have an explicit update-transport policy that prevents
+cache replies, request reordering, interleaving, or automatic retries from
+altering an update session. It must preserve complete frames byte-for-byte,
+report the difference between forwarded, acknowledged, and verified update
+state, and fail closed on incomplete or ambiguous framing. Exercise
+interruption and recovery cases against an isolated virtual endpoint before
+any hardware trial. Add trace events that record transaction phase and
+integrity result while excluding firmware payloads and credentials from
+ordinary logs.
+
+Any physical update trial requires a separately approved, attended test
+window, a device-specific vendor image and rollback/recovery procedure, a
+pre-update identity/version check, and a way to verify the resulting version.
+The test operator must be able to stop the process. No unattended production
+firmware update is in scope. No firmware update or RPi deployment is currently
+authorized by this roadmap item.
+
 ## Repository cleanup
 
 The release surface should contain source, small fixtures, current operating

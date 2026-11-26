@@ -1,5 +1,6 @@
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -43,6 +44,26 @@ class BusySerial:
     def read(self, count: int) -> bytes:
         time.sleep(0.001)
         return b"\x00" * count
+
+
+class CountingRTUFramer(RTUFramer):
+    def __init__(self, serial: FakeSerial, char_time: float = 0.001) -> None:
+        super().__init__(serial, char_time=char_time)
+        self.scan_calls = 0
+
+    def _first_crc_frame(self, data: bytes) -> tuple[int, int, bytes] | None:
+        self.scan_calls += 1
+        time.sleep(0.002)
+        return super()._first_crc_frame(data)
+
+
+class OneByteSerial(FakeSerial):
+    @property
+    def in_waiting(self) -> int:
+        return min(super().in_waiting, 1)
+
+    def read(self, count: int) -> bytes:
+        return super().read(min(count, 1))
 
 
 def request(function: int, address: int, count: int) -> bytes:
@@ -385,6 +406,59 @@ def test_standard_reader_honors_deadline_with_large_unframed_buffer() -> None:
 
     assert result == b""
     assert time.perf_counter() - started < 0.2
+
+
+@pytest.mark.parametrize("reader", ["generic", "standard"])
+def test_static_malformed_buffer_is_crc_scanned_once(reader: str) -> None:
+    serial = FakeSerial()
+    serial.feed(bytes(512))
+    framer = CountingRTUFramer(serial)
+
+    with patch(
+        "growatt_broker.broker.find_standard_response",
+        wraps=find_standard_response,
+    ) as standard_search:
+        if reader == "generic":
+            result = framer.read_frame(timeout=0.03)
+        else:
+            result = framer.read_standard_frame(
+                request(0x04, 0, 125), timeout=0.03
+            )
+
+    assert result == b""
+    assert framer.scan_calls == 1
+    assert standard_search.call_count == (0 if reader == "generic" else 1)
+
+
+def test_standard_reader_rechecks_buffer_after_new_bytes_arrive() -> None:
+    request_frame = request(0x03, 12, 2)
+    response = add_crc(bytes([1, 0x03, 4, 0, 1, 0, 2]))
+    serial = FakeSerial()
+    serial.feed(bytes(512))
+    framer = CountingRTUFramer(serial, char_time=0.01)
+
+    def feed_response() -> None:
+        time.sleep(0.01)
+        serial.feed(response)
+
+    feeder = threading.Thread(target=feed_response)
+    feeder.start()
+    result = framer.read_standard_frame(request_frame, timeout=0.2)
+    feeder.join(timeout=0.2)
+
+    assert not feeder.is_alive()
+    assert result == response
+
+
+def test_standard_response_does_not_crc_scan_each_partial_chunk() -> None:
+    request_frame = request(0x03, 12, 2)
+    response = add_crc(bytes([1, 0x03, 4, 0, 1, 0, 2]))
+    serial = OneByteSerial()
+    serial.feed(response)
+    framer = CountingRTUFramer(serial, char_time=0.01)
+
+    assert framer.read_standard_frame(request_frame, timeout=0.2) == response
+    assert framer.scan_calls == 0
 
 
 def test_reader_reports_unframed_serial_bytes() -> None:

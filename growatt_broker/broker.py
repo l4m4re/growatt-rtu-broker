@@ -297,23 +297,25 @@ class RTUFramer:
 
     def read_frame(self, timeout: float = 3.0) -> bytes:
         start = time.perf_counter()
+        last_scanned_buffer: bytes | None = None
         while True:
             now = time.perf_counter()
             if now - start > timeout:
                 residual = bytes(self.buf)
                 if len(self.buf) >= 4:
-                    buf = residual
-                    found = self._first_crc_frame(buf)
-                    if found is not None:
-                        start_idx, end_idx, frame = found
-                        self._report_unframed(
-                            buf[:start_idx], "prefix_before_crc_frame"
-                        )
-                        remaining = buf[end_idx:]
-                        self.buf.clear()
-                        if remaining:
-                            self.buf.extend(remaining)
-                        return frame
+                    if residual != last_scanned_buffer:
+                        last_scanned_buffer = residual
+                        found = self._first_crc_frame(residual)
+                        if found is not None:
+                            start_idx, end_idx, frame = found
+                            self._report_unframed(
+                                residual[:start_idx], "prefix_before_crc_frame"
+                            )
+                            remaining = residual[end_idx:]
+                            self.buf.clear()
+                            if remaining:
+                                self.buf.extend(remaining)
+                            return frame
                 self._report_unframed(residual, "unframed_timeout")
                 if len(residual) > 8192 and self.capture:
                     self.capture(residual, "buffer_overflow_discard")
@@ -330,9 +332,16 @@ class RTUFramer:
                     # This handles combined frames (frame1+frame2) by returning
                     # the first valid frame and leaving the remainder in the buffer.
                     if len(self.buf) >= 4:
-                        # Search for a valid frame anywhere in the buffer (handles
-                        # possible mis-alignment if we started reading mid-frame).
+                        # Search only after input changes; rescanning the same
+                        # malformed buffer on each poll burns the entire timeout.
                         buf = bytes(self.buf)
+                        if buf == last_scanned_buffer:
+                            buf = b""
+                        else:
+                            last_scanned_buffer = buf
+                    else:
+                        buf = b""
+                    if buf:
                         found = self._first_crc_frame(buf)
                         if found is not None:
                             start_idx, end_idx, frame = found
@@ -356,6 +365,13 @@ class RTUFramer:
                     # processing incomplete frames which would fail CRC checks.
                     if len(self.buf) >= 4:
                         buf = bytes(self.buf)
+                        if buf == last_scanned_buffer:
+                            buf = b""
+                        else:
+                            last_scanned_buffer = buf
+                    else:
+                        buf = b""
+                    if buf:
                         found = self._first_crc_frame(buf)
                         if found is not None:
                             start_idx, end_idx, frame = found
@@ -459,6 +475,9 @@ class RTUFramer:
                 on_unmatched(candidate)
 
         deadline = start + timeout
+        last_examined_buffer: bytes | None = None
+        last_zero_scan_buffer: bytes | None = None
+        last_unmatched_scan_buffer: bytes | None = None
         while True:
             if time.perf_counter() >= deadline:
                 return b""
@@ -467,12 +486,20 @@ class RTUFramer:
                 if time.perf_counter() >= deadline:
                     return b""
             buffer = bytes(self.buf)
-            response = find_standard_response(
-                buffer,
-                request,
-                allow_unit_zero_wildcard=allow_unit_zero_wildcard,
-            )
-            if response is None:
+            response = None
+            if buffer != last_examined_buffer:
+                last_examined_buffer = buffer
+                response = find_standard_response(
+                    buffer,
+                    request,
+                    allow_unit_zero_wildcard=allow_unit_zero_wildcard,
+                )
+            if (
+                response is None
+                and buffer != last_zero_scan_buffer
+                and time.perf_counter() - self.last >= self.gap
+            ):
+                last_zero_scan_buffer = buffer
                 found = self._first_crc_frame(buffer)
                 if found is not None and is_zero_function_response(found[2]):
                     response = found[2]
@@ -486,7 +513,10 @@ class RTUFramer:
                 return response
 
             if on_unmatched is not None and time.perf_counter() - self.last >= self.gap:
-                report_unmatched_prefix(len(self.buf))
+                unmatched_buffer = bytes(self.buf)
+                if unmatched_buffer != last_unmatched_scan_buffer:
+                    last_unmatched_scan_buffer = unmatched_buffer
+                    report_unmatched_prefix(len(self.buf))
 
             time.sleep(max(0.001, self.char_time * 0.5))
 

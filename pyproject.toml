@@ -47,6 +47,7 @@ growatt-broker = "growatt_broker.broker:main"
 
 [tool.pytest.ini_options]
 addopts = "-q"
+testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
   "enable_socket: test opens loopback sockets",
