@@ -72,6 +72,12 @@ for register names or inverter semantics.
 - test read-only operation with HA, Shine, and the development listener before
   any approved write/readback test.
 
+Broker updates may be prepared, built, and verified offline at any time.
+Applying an image to the live Raspberry Pi is a separate attended operation:
+the user must explicitly arrange the window, remain present and able to
+intervene, and observe the Growatt portal response. Do not deploy to the live
+Pi or perform inverter writes while the user is away.
+
 ### 3. Evidence and protocol handoff
 
 - keep compact, sanitised replay fixtures with provenance;
@@ -131,6 +137,17 @@ serial transactions and must never overlap an update session. The action's
 exclusive lock pauses Growatt coordinators sharing its HA connection hub; it
 does not exclude Shine traffic, PiITM cache polling, or other broker clients,
 so it is not an update-safety lock.
+
+When a config entry is selected, the action reads its persisted connection
+settings even while the integration is disabled, preserving its tuned pacing
+and block size while pausing that HA poller. Its lock and socket reset affect
+only clients in that HA process. The ZABA22-derived diagnostic option sends
+exactly 100 FC03 reads of 102 registers each and does not use the ordinary
+single-register fallback. For broker-mediated scans, all physical requests
+must still pass through the broker's RTU owner; record failed ranges and zero
+values instead of omitting them. This scanner workflow and its limits are
+documented in the [historical Alchemy Growatt conversation](archive/Alchemy%20Growatt%20voortzetten.md),
+which is context rather than current policy.
 
 The broker must then have an explicit update-transport policy that prevents
 cache replies, request reordering, interleaving, or automatic retries from
