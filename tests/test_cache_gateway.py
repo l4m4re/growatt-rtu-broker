@@ -9,8 +9,8 @@ from growatt_broker.cache_gateway import (
     ClientReadRequest,
     GatewayResult,
     PatternKey,
-    PollPrediction,
     PollCoordinator,
+    PollPrediction,
     RegisterCache,
     RegisterKey,
     ShinePatternObserver,
@@ -19,7 +19,6 @@ from growatt_broker.cache_gateway import (
     min_6000tl_xh_discovery_profile,
 )
 from growatt_broker.configuration import load_installation_config
-
 
 OLD_POLICIES = load_installation_config(
     __file__.replace(
@@ -480,7 +479,7 @@ def test_cache_gateway_reads_do_not_require_a_shine_client() -> None:
     assert [request.hex() for request in downstream.requests] == ["01040bb8007db22a"]
 
 
-def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
+def test_gateway_reads_across_native_boundaries_with_one_physical_request() -> None:
     downstream = _FakeDownstream()
     gateway = _gateway(downstream)
     request = add_crc(bytes.fromhex("01040c1d0020"))
@@ -490,18 +489,118 @@ def test_gateway_composes_a_read_across_native_block_boundaries() -> None:
     assert result.status == "served"
     assert result.read is not None
     assert result.read.words == tuple(range(3101, 3133))
-    assert downstream.requests == [
-        bytes.fromhex("01040bb8007db22a"),
-        bytes.fromhex("01040c35007d2375"),
-    ]
+    assert result.read.snapshot_ids == ("generation-1",)
+    assert downstream.requests == [request]
 
     repeated = gateway.handle_standard_request(request, client="HA", source="PROD_TCP")
 
     assert repeated.status == "served"
     assert downstream.requests == [
-        bytes.fromhex("01040bb8007db22a"),
-        bytes.fromhex("01040c35007d2375"),
+        request,
     ]
+
+
+def test_gateway_does_not_compose_fresh_blocks_from_different_snapshots() -> None:
+    downstream = _FakeDownstream()
+    gateway = _gateway(downstream)
+    now = time.monotonic()
+    gateway.cache.put_block(
+        RegisterKey(4, 3000, 125),
+        [111] * 125,
+        captured_at=now - 0.1,
+        source_transaction="first-poll",
+        snapshot_id="poll-1",
+    )
+    gateway.cache.put_block(
+        RegisterKey(4, 3125, 125),
+        [222] * 125,
+        captured_at=now - 0.1,
+        source_transaction="second-poll",
+        snapshot_id="poll-2",
+    )
+    request = add_crc(bytes.fromhex("01040c1d0020"))
+
+    result = gateway.handle_standard_request(
+        request,
+        client="HA",
+        source="PROD_TCP",
+        now=now,
+    )
+
+    assert result.status == "served"
+    assert result.read is not None
+    assert result.read.words == tuple(range(3101, 3133))
+    assert len(result.read.snapshot_ids) == 1
+    assert downstream.requests == [request]
+
+
+def test_gateway_uses_composed_cache_when_blocks_share_a_snapshot() -> None:
+    downstream = _FakeDownstream()
+    gateway = _gateway(downstream)
+    now = time.monotonic()
+    gateway.cache.put_block(
+        RegisterKey(4, 3000, 125),
+        range(3000, 3125),
+        captured_at=now - 0.2,
+        source_transaction="batch-first",
+        snapshot_id="batch-1",
+    )
+    gateway.cache.put_block(
+        RegisterKey(4, 3125, 125),
+        range(3125, 3250),
+        captured_at=now - 0.1,
+        source_transaction="batch-second",
+        snapshot_id="batch-1",
+    )
+    request = add_crc(bytes.fromhex("01040c1d0020"))
+
+    result = gateway.handle_standard_request(
+        request,
+        client="HA",
+        source="PROD_TCP",
+        now=now,
+    )
+
+    assert result.status == "served"
+    assert result.read is not None
+    assert result.read.words == tuple(range(3101, 3133))
+    assert result.read.snapshot_ids == ("batch-1",)
+    assert downstream.requests == []
+
+
+def test_gateway_does_not_serve_mixed_cached_blocks_after_refresh_failure() -> None:
+    class UnavailableDownstream:
+        def transact(self, _request: bytes, **_kwargs: object) -> bytes:
+            return b""
+
+    gateway = _gateway(UnavailableDownstream())
+    now = time.monotonic()
+    gateway.cache.put_block(
+        RegisterKey(4, 3000, 125),
+        [111] * 125,
+        captured_at=now - 0.1,
+        source_transaction="first-poll",
+        snapshot_id="poll-1",
+    )
+    gateway.cache.put_block(
+        RegisterKey(4, 3125, 125),
+        [222] * 125,
+        captured_at=now - 0.1,
+        source_transaction="second-poll",
+        snapshot_id="poll-2",
+    )
+    request = add_crc(bytes.fromhex("01040c1d0020"))
+
+    result = gateway.handle_standard_request(
+        request,
+        client="HA",
+        source="PROD_TCP",
+        now=now,
+    )
+
+    assert result.status == "failed"
+    assert result.read is None
+    assert result.reason == "physical read timeout"
 
 
 def test_ha_uses_a_recent_shine_snapshot_before_refreshing() -> None:

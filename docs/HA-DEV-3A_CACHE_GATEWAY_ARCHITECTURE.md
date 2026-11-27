@@ -97,13 +97,12 @@ Unused words in a native page remain cached but do not become HA entities.
 
 The first implementation is `RegisterCache`. It refuses stale or failed data
 as fresh data. A request contained in one fresh block is sliced locally. The
-current broker path may compose a range across native blocks when every piece
-is fresh, even when those pieces have different `snapshot_id` values. Such a
-response is fresh per block but is not one atomic acquisition snapshot. The
-broker's `cache_hit` event reports the contributing snapshot IDs and the
-maximum age; the Modbus TCP response itself does not carry that provenance.
-Treat cross-block responses as potentially mixed-time until the implementation
-enforces a common snapshot or defines and exposes an acceptable skew bound.
+broker composes a range across native blocks only when every piece is fresh
+and all pieces have the same `snapshot_id`. When the range is not present in
+one snapshot and the cached pieces have different snapshot IDs, it reads the
+exact requested range in one physical RTU transaction and caches that result
+as one snapshot. A failed physical read fails the client request; the broker
+does not return a mixed-snapshot response.
 
 ## TCP read path
 
@@ -115,8 +114,9 @@ one of two paths:
 1. a fresh value is contained in the register cache and the response is built
    immediately from that snapshot; or
 2. the value is absent or stale, so the gateway schedules a physical read of
-   the complete native block (or all native blocks needed for a crossing
-   range), updates the register cache, and only then returns the response.
+   the complete native block for a contained request, or reads the exact
+   requested range in one transaction when it crosses native block boundaries.
+   It updates the register cache before returning the response.
 
 An exact TCP retry is safe on the second path because the first completed
 refresh has already populated the shared register cache. The retry becomes a

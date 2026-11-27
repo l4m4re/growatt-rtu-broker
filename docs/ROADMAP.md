@@ -97,10 +97,11 @@ Pi or perform inverter writes while the user is away.
 - keep FC20 on-demand; it is not part of the cache poll plan;
 - test concurrent HA, Shine, and development reads under timeout and
   re-enumeration conditions;
-- resolve the cross-native-block snapshot contract: `CacheGatewayService`
-  currently permits composed reads with different `snapshot_id` values, while
-  the Modbus TCP response carries no age or source provenance; either enforce
-  a common acquisition snapshot or define and expose a bounded-skew contract;
+- cross-native-block reads now compose only same-`snapshot_id` cached blocks;
+  otherwise the broker issues the exact requested range as one physical RTU
+  request and fails closed if it cannot refresh. Offline regression coverage
+  proves that mixed snapshots are not returned. Hardware support for arbitrary
+  cross-block requests remains profile-specific and needs read-only validation;
 - test write/readback clamping, rejected writes, and a failed readback without
   serving a stale value as coherent.
 
@@ -152,6 +153,14 @@ single-register fallback. The ordinary FC03 reader avoids an accidental
 such a chunk to 101. For broker-mediated scans, all physical requests must
 still pass through the broker's RTU owner; record failed ranges and zero values
 instead of omitting them.
+
+The HA scanner holds its local gateway lock for the whole campaign, sleeps
+between chunks, retries a transport failure once, and probes once with a
+single-register read before downgrading subsequent reads after a rejected
+block. Only the pacing and per-block recovery lessons transfer directly to a
+shared broker. A broker-side scan must be a bounded low-priority sequence of
+ordinary owner transactions, yielding between blocks so Shine/cloud traffic
+can run; the HA lock cannot provide that system-wide scheduling guarantee.
 
 A scan's `Read OK (zero value)` means the selected TCP endpoint returned zero;
 it does not say whether PiITM served a fresh cache hit or performed a physical

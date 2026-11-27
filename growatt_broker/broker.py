@@ -26,8 +26,8 @@ from typing import List, Optional
 import serial
 
 from .cache_gateway import (
-    CachePolicy,
     CachedRead,
+    CachePolicy,
     GatewayResult,
     PatternKey,
     PollCoordinator,
@@ -1494,7 +1494,7 @@ class CacheGatewayService:
                 now=now,
                 max_age=max_age,
                 allow_composed=allow_composed,
-                allow_mixed_snapshots=allow_composed,
+                allow_mixed_snapshots=False,
             )
         if cached is not None and not force_refresh:
             self._emit(
@@ -1511,6 +1511,7 @@ class CacheGatewayService:
             )
             return cached, None
 
+        refresh_keys = (key,) if allow_composed else physical_keys
         self._emit(
             "cache_miss",
             role="INFO",
@@ -1519,11 +1520,17 @@ class CacheGatewayService:
             function=key.function,
             start=key.start,
             count=key.count,
+            refresh_strategy="single_request" if allow_composed else "native_block",
             physical_blocks=[
-                {"start": block.start, "count": block.count} for block in physical_keys
+                {"start": block.start, "count": block.count} for block in refresh_keys
             ],
+            configured_blocks=(
+                [{"start": block.start, "count": block.count} for block in physical_keys]
+                if allow_composed
+                else None
+            ),
         )
-        for physical_key in physical_keys:
+        for physical_key in refresh_keys:
             with self._lock:
                 block_cached = self.cache.read(physical_key, now=now, max_age=max_age)
                 state = self._inflight.get(physical_key)
@@ -1551,7 +1558,11 @@ class CacheGatewayService:
                         physical_key,
                         client=client,
                         source=source,
-                        reason="cache_miss_or_stale",
+                        reason=(
+                            "cross_native_range"
+                            if allow_composed
+                            else "cache_miss_or_stale"
+                        ),
                     )
                 except Exception as exc:
                     state.error = str(exc)
@@ -1590,7 +1601,7 @@ class CacheGatewayService:
                 now=time.monotonic(),
                 max_age=max_age,
                 allow_composed=allow_composed,
-                allow_mixed_snapshots=allow_composed,
+                allow_mixed_snapshots=False,
             )
         if cached is None:
             return None, "refresh did not produce a usable snapshot"
