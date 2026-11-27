@@ -33,6 +33,21 @@ cd /share/growatt-rtu-broker
 cp .env.example .env
 ```
 
+When Docker CLI runs inside an HA add-on, bind-mount source paths are resolved
+by the host Docker daemon, not inside the add-on. The add-on's `/share` may
+therefore need its host-side path in `docker run` or Compose. Inspect the
+Home Assistant container's mount and use the reported source path:
+
+```bash
+docker inspect --format '{{range .Mounts}}{{if eq .Destination "/share"}}{{.Source}}{{end}}{{end}}' homeassistant
+```
+
+For example, this installation exposes add-on `/share` as
+`/mnt/data/supervisor/share` to Docker. A bind mount from `/share/...` failed
+with a read-only-filesystem error because that path did not exist in the host
+namespace. Keep the checkout in `/share`; use the host-side source path only
+for Docker bind mounts.
+
 Select one reviewed installation configuration, for example:
 
 ```ini
@@ -129,7 +144,12 @@ Before an approved write test, verify:
 
 ## Stop, update, and rollback
 
-Keep the previous image tag or digest before an update. A normal rollback is:
+Keep the previous image tag or digest and its stopped container until the new
+image passes read-only checks. For a directly managed container, keep the old
+container under a rollback name, then rename the candidate to the live name.
+If candidate startup or acceptance fails, stop it and start the rollback
+container. Record exact names, tags, and image IDs. A normal Compose rollback
+is:
 
 ```bash
 docker compose down
@@ -150,3 +170,8 @@ docker run ...
 Record the exact rollback command in the live test report. Do not change live
 writes, firmware, or serial timing without a bounded test and an explicit
 rollback.
+
+After the new version has been accepted, remove only stopped broker containers
+and broker image tags older than the retained known-good rollback. Do not use a
+global `docker system prune` for this cleanup; leave unrelated Home Assistant
+images and build cache untouched.
