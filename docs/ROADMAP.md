@@ -119,6 +119,23 @@ Pi or perform inverter writes while the user is away.
   counts are bounded buffer lengths presented to the scanner, not a count of
   individual CPU byte operations. This instrumentation does not change frame
   selection or retain per-scan sequences, and a live cause remains unverified;
+- offline analysis, following the evidence trail in the
+  [archived Alchemy Growatt conversation](archive/Alchemy%20Growatt%20voortzetten.md),
+  of the local, uncommitted capture
+  `logs/sniff-live-d18b3db-20261002-rerun.jsonl` found 702 timing events. Its
+  maximum is a Shine FC20 exchange: the scheduler selected the request at
+  12:49:54.132 UTC with 0.58 ms queue wait, but the physical request event is
+  not until 12:50:00.477;
+  an asynchronous FC03 frame of 255 bytes is observed just before that request.
+  The physical response is 205 bytes with 381.827 ms reported latency, while
+  `frame_scan_ms` is 6621.879 ms and `total_ms` is 6726.774 ms. Replaying those
+  exact CRC-valid request/async/response frames offline returns the response
+  byte-for-byte and measures 0.36 ms of scan time on this host. The captured
+  frame alone therefore does not reproduce the delay. This local replay
+  narrows the stall to before physical transmission but does not prove that
+  the 255-byte frame caused it; the original capture lacks raw pre-request
+  buffer contents and UART chunk timing. Root cause remains open, and the
+  historical capture is not added to the repository;
 - re-run the bounded regression suite before preparing another RPi image;
   applying it remains an attended, separately approved operation;
 - cross-native-block reads now compose only same-`snapshot_id` cached blocks;
