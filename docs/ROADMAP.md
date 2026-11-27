@@ -97,6 +97,22 @@ Pi or perform inverter writes while the user is away.
 - keep FC20 on-demand; it is not part of the cache poll plan;
 - test concurrent HA, Shine, and development reads under timeout and
   re-enumeration conditions;
+- the RTU reader's repeated-scan guard from `bec6440` is present on this
+  branch. It skips a CRC rescan when the buffered bytes are unchanged; the
+  framing regression suite passed 50 tests offline on 2026-11-27. This verifies
+  the fixed-buffer case, not the cause of every historical timing outlier;
+- the 2026-10-02 timing outlier discussed in the
+  [archived Alchemy Growatt conversation](archive/Alchemy%20Growatt%20voortzetten.md)
+  is not fully attributable from `frame_scan_ms` alone. That metric is reset
+  before `pre_request_drain`, while `physical_latency_ms` starts after the
+  request is written. A high scan total can therefore include pre-request
+  buffer work. The event records no scan count, per-scan duration, buffer size,
+  or UART chunk sequence, so the reported 6.62-second aggregate versus 382-ms
+  physical latency does not prove which buffer or scan path caused it;
+- before treating the historical outlier as fixed, add enough offline trace
+  detail to separate pre-request draining from response framing and to count
+  scans/bytes. Re-run the bounded regression suite before preparing another
+  RPi image; applying it remains an attended, separately approved operation;
 - cross-native-block reads now compose only same-`snapshot_id` cached blocks;
   otherwise the broker issues the exact requested range as one physical RTU
   request and fails closed if it cannot refresh. Offline regression coverage
