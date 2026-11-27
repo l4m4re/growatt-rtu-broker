@@ -6,6 +6,15 @@
 > [`AGENTS.md`](../../AGENTS.md) and [`ROADMAP.md`](../ROADMAP.md) for current
 > broker requirements and authorization boundaries.
 
+> Review note (2026-11-27): this archive was reviewed for the broker framing
+> timing investigation. Its 2026-10-02 capture records a 6.62-second
+> `frame_scan_ms` outlier alongside 381.827 ms physical latency and 6.727 seconds
+> total time; those aggregate measurements do not identify the scan phase or
+> establish a root cause. The current roadmap records the phase-level offline
+> instrumentation added to investigate this without changing frame selection.
+> Live-operation permissions described in the transcript remain subject to the
+> current authorization and attendance requirements in the roadmap.
+
 ---
 
 **You:**

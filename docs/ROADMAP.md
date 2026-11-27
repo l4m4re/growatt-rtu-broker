@@ -106,13 +106,21 @@ Pi or perform inverter writes while the user is away.
   is not fully attributable from `frame_scan_ms` alone. That metric is reset
   before `pre_request_drain`, while `physical_latency_ms` starts after the
   request is written. A high scan total can therefore include pre-request
-  buffer work. The event records no scan count, per-scan duration, buffer size,
-  or UART chunk sequence, so the reported 6.62-second aggregate versus 382-ms
-  physical latency does not prove which buffer or scan path caused it;
-- before treating the historical outlier as fixed, add enough offline trace
-  detail to separate pre-request draining from response framing and to count
-  scans/bytes. Re-run the bounded regression suite before preparing another
-  RPi image; applying it remains an attended, separately approved operation;
+  buffer work. The historical event records no scan count, per-scan duration,
+  buffer size, or UART chunk sequence, so the reported 6.62-second aggregate
+  versus 382-ms physical latency does not prove which buffer or scan path
+  caused it;
+- the archive review note preserves that outlier as historical evidence, not a
+  diagnosed cause. Phase-level offline telemetry now separates CRC scans during
+  pre-request draining, response framing, and other work. Each phase reports
+  scan count, total and maximum input bytes, total and maximum bounded
+  scan-window bytes, and total and maximum elapsed scan time; legacy
+  `frame_scan_ms` remains as the aggregate for existing consumers. Window-byte
+  counts are bounded buffer lengths presented to the scanner, not a count of
+  individual CPU byte operations. This instrumentation does not change frame
+  selection or retain per-scan sequences, and a live cause remains unverified;
+- re-run the bounded regression suite before preparing another RPi image;
+  applying it remains an attended, separately approved operation;
 - cross-native-block reads now compose only same-`snapshot_id` cached blocks;
   otherwise the broker issues the exact requested range as one physical RTU
   request and fails closed if it cannot refresh. Offline regression coverage

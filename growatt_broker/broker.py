@@ -18,7 +18,8 @@ import signal
 import socket
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -160,13 +161,29 @@ class RTUFramer:
         self.on_unframed = on_unframed
         self.resync = resync
         self._crc_scan_time_ms = 0.0
+        self._scan_phase = "other"
+        self._crc_scan_metrics: dict[str, dict[str, float | int]] = {}
 
     def reset_scan_metrics(self) -> None:
         self._crc_scan_time_ms = 0.0
+        self._crc_scan_metrics.clear()
 
     @property
     def crc_scan_time_ms(self) -> float:
         return self._crc_scan_time_ms
+
+    @property
+    def crc_scan_metrics(self) -> dict[str, dict[str, float | int]]:
+        return {phase: dict(values) for phase, values in self._crc_scan_metrics.items()}
+
+    @contextmanager
+    def scan_phase(self, phase: str) -> Iterator[None]:
+        previous_phase = self._scan_phase
+        self._scan_phase = phase
+        try:
+            yield
+        finally:
+            self._scan_phase = previous_phase
 
     def _first_crc_frame(
         self,
@@ -180,8 +197,28 @@ class RTUFramer:
         buffer an unbounded CRC search on the scheduler thread.
         """
         started = time.perf_counter()
+        phase = self._scan_phase
+        metrics = self._crc_scan_metrics.setdefault(
+            phase,
+            {
+                "calls": 0,
+                "input_bytes": 0,
+                "max_input_bytes": 0,
+                "window_bytes": 0,
+                "max_window_bytes": 0,
+                "scan_ms": 0.0,
+                "max_scan_ms": 0.0,
+            },
+        )
+        metrics["calls"] += 1
+        metrics["input_bytes"] += len(data)
+        metrics["max_input_bytes"] = max(metrics["max_input_bytes"], len(data))
         try:
             end_limit = min(len(data), self._MAX_RESYNC_BYTES)
+            metrics["window_bytes"] += end_limit
+            metrics["max_window_bytes"] = max(
+                metrics["max_window_bytes"], end_limit
+            )
             starts = range(end_limit - 3) if self.resync else (0,)
             for frame_start in starts:
                 if frame_start + 1 >= end_limit:
@@ -267,7 +304,10 @@ class RTUFramer:
                         return frame_start, frame_end, data[frame_start:frame_end]
             return None
         finally:
-            self._crc_scan_time_ms += (time.perf_counter() - started) * 1000
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            self._crc_scan_time_ms += elapsed_ms
+            metrics["scan_ms"] += elapsed_ms
+            metrics["max_scan_ms"] = max(metrics["max_scan_ms"], elapsed_ms)
 
     def _report_unframed(self, data: bytes, reason: str) -> None:
         if data and self.on_unframed is not None:
@@ -1014,10 +1054,11 @@ class Downstream:
             # Preserve complete asynchronous frames that arrived before this
             # request; only incomplete bytes remain for the response reader.
             assert self.ser is not None
-            self.framer._read_available("pre_request_drain")
-            self.framer.drain_complete_frames(
-                lambda frame: self._report_async_frame(req, frame)
-            )
+            with self.framer.scan_phase("pre_request_drain"):
+                self.framer._read_available("pre_request_drain")
+                self.framer.drain_complete_frames(
+                    lambda frame: self._report_async_frame(req, frame)
+                )
             self.framer.last = time.perf_counter()
             tx_ns = time.monotonic_ns()
             if self.events:
@@ -1033,24 +1074,25 @@ class Downstream:
             self.ser.write(req)
             self.ser.flush()
             physical_started = time.monotonic()
-            if standard_modbus:
-                resp = self.framer.read_standard_frame(
-                    req,
-                    timeout=timeout,
-                    on_unmatched=lambda frame: self._report_async_frame(req, frame),
-                    allow_unit_zero_wildcard=source == "SHINE",
-                )
-            else:
-                resp = self.framer.read_matching(
-                    lambda frame: (
-                        crc_ok(frame)
-                        and len(frame) >= 2
-                        and (frame[0] == req[0] or (req[0] == 0 and frame[0] != 0))
-                        and frame[1] in (req[1], req[1] | 0x80)
-                    ),
-                    timeout=timeout,
-                    on_unmatched=lambda frame: self._report_async_frame(req, frame),
-                )
+            with self.framer.scan_phase("response"):
+                if standard_modbus:
+                    resp = self.framer.read_standard_frame(
+                        req,
+                        timeout=timeout,
+                        on_unmatched=lambda frame: self._report_async_frame(req, frame),
+                        allow_unit_zero_wildcard=source == "SHINE",
+                    )
+                else:
+                    resp = self.framer.read_matching(
+                        lambda frame: (
+                            crc_ok(frame)
+                            and len(frame) >= 2
+                            and (frame[0] == req[0] or (req[0] == 0 and frame[0] != 0))
+                            and frame[1] in (req[1], req[1] | 0x80)
+                        ),
+                        timeout=timeout,
+                        on_unmatched=lambda frame: self._report_async_frame(req, frame),
+                    )
             physical_latency_ms = (time.monotonic() - physical_started) * 1000
             if resp:
                 self._consecutive_timeouts = 0
@@ -1070,6 +1112,39 @@ class Downstream:
                 timeout=timeout,
             )
         if self.events:
+            scan_metrics = self.framer.crc_scan_metrics
+            scan_event_fields: dict[str, float | int] = {
+                "crc_scan_count": 0,
+                "crc_scan_input_bytes": 0,
+                "crc_scan_window_bytes": 0,
+            }
+            for phase in ("pre_request_drain", "response", "other"):
+                metrics = scan_metrics.get(phase, {})
+                prefix = {
+                    "pre_request_drain": "pre_request",
+                    "response": "response",
+                    "other": "other",
+                }[phase]
+                for source_field, event_field in (
+                    ("calls", "scan_count"),
+                    ("input_bytes", "scan_input_bytes"),
+                    ("max_input_bytes", "scan_max_input_bytes"),
+                    ("window_bytes", "scan_window_bytes"),
+                    ("max_window_bytes", "scan_max_window_bytes"),
+                    ("scan_ms", "scan_ms"),
+                    ("max_scan_ms", "scan_max_ms"),
+                ):
+                    value = metrics.get(source_field, 0)
+                    if event_field in ("scan_ms", "scan_max_ms"):
+                        value = round(float(value), 3)
+                    scan_event_fields[f"{prefix}_{event_field}"] = value
+                scan_event_fields["crc_scan_count"] += int(metrics.get("calls", 0))
+                scan_event_fields["crc_scan_input_bytes"] += int(
+                    metrics.get("input_bytes", 0)
+                )
+                scan_event_fields["crc_scan_window_bytes"] += int(
+                    metrics.get("window_bytes", 0)
+                )
             self.events.emit(
                 event="downstream_timing",
                 role="INFO" if resp else "WARN",
@@ -1080,6 +1155,7 @@ class Downstream:
                 queue_wait_ms=round(queue_wait_ms, 3),
                 physical_latency_ms=round(physical_latency_ms, 3),
                 frame_scan_ms=round(self.framer.crc_scan_time_ms, 3),
+                **scan_event_fields,
                 retry_count=0,
                 total_ms=round((time.monotonic() - transaction_started) * 1000, 3),
             )
