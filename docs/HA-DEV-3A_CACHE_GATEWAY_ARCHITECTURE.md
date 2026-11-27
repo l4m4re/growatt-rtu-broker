@@ -96,10 +96,14 @@ This is intentionally below semantic registers and Home Assistant entities.
 Unused words in a native page remain cached but do not become HA entities.
 
 The first implementation is `RegisterCache`. It refuses stale or failed data
-as fresh data. A request contained in one fresh block is sliced locally. A
-range crossing blocks is composed only when every piece is fresh and all
-pieces share the same `snapshot_id`; otherwise a refresh is required. This
-prevents silently combining unrelated generations.
+as fresh data. A request contained in one fresh block is sliced locally. The
+current broker path may compose a range across native blocks when every piece
+is fresh, even when those pieces have different `snapshot_id` values. Such a
+response is fresh per block but is not one atomic acquisition snapshot. The
+broker's `cache_hit` event reports the contributing snapshot IDs and the
+maximum age; the Modbus TCP response itself does not carry that provenance.
+Treat cross-block responses as potentially mixed-time until the implementation
+enforces a common snapshot or defines and exposes an acceptable skew bound.
 
 ## TCP read path
 
@@ -118,6 +122,16 @@ An exact TCP retry is safe on the second path because the first completed
 refresh has already populated the shared register cache. The retry becomes a
 normal cache hit. Requests that arrive concurrently while a refresh is in
 flight are coalesced by the gateway rather than by a TCP response cache.
+
+A successful TCP read proves only that the broker returned a usable cache
+value. To establish that a particular value came from a physical RTU response,
+correlate it with `cache_physical_refresh_start` and
+`cache_physical_refresh_complete` for the same block and source in the request
+time window. These events do not yet share a stable transaction correlation
+identifier. `cache_hit` means no new RTU read was needed. A scan that records
+`Read OK` and zero values without those cache/RTU events cannot by itself
+establish physical register state. Sequential scans are also not a single-time
+snapshot.
 
 Writes follow the same ownership rule. The overlapping snapshots are marked
 dirty before the physical FC06/FC10 transaction. Reads wait while the write

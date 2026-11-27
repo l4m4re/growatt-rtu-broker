@@ -97,6 +97,10 @@ Pi or perform inverter writes while the user is away.
 - keep FC20 on-demand; it is not part of the cache poll plan;
 - test concurrent HA, Shine, and development reads under timeout and
   re-enumeration conditions;
+- resolve the cross-native-block snapshot contract: `CacheGatewayService`
+  currently permits composed reads with different `snapshot_id` values, while
+  the Modbus TCP response carries no age or source provenance; either enforce
+  a common acquisition snapshot or define and expose a bounded-skew contract;
 - test write/readback clamping, rejected writes, and a failed readback without
   serving a stale value as coherent.
 
@@ -143,10 +147,22 @@ settings even while the integration is disabled, preserving its tuned pacing
 and block size while pausing that HA poller. Its lock and socket reset affect
 only clients in that HA process. The ZABA22-derived diagnostic option sends
 exactly 100 FC03 reads of 102 registers each and does not use the ordinary
-single-register fallback. For broker-mediated scans, all physical requests
-must still pass through the broker's RTU owner; record failed ranges and zero
-values instead of omitting them. This scanner workflow and its limits are
-documented in the [historical Alchemy Growatt conversation](archive/Alchemy%20Growatt%20voortzetten.md),
+single-register fallback. The ordinary FC03 reader avoids an accidental
+102-register request inside the ZABA22 diagnostic dispatch window by reducing
+such a chunk to 101. For broker-mediated scans, all physical requests must
+still pass through the broker's RTU owner; record failed ranges and zero values
+instead of omitting them.
+
+A scan's `Read OK (zero value)` means the selected TCP endpoint returned zero;
+it does not say whether PiITM served a fresh cache hit or performed a physical
+RTU read. Record the cache decision, snapshot ID and age, plus the physical
+request/response when a refresh occurs. In the 2026-11-14 staging scans through
+the development endpoint, H30100 read as 1 and H30405, H30406 and H30475 read
+as zero. The retained all-source write capture contains no matching successful
+cache or RTU read events for those values, so their physical source remains
+unresolved. Errors for other scan blocks do not establish the origin of these
+VPP values. The scanner workflow and its limits are documented in the
+[historical Alchemy Growatt conversation](archive/Alchemy%20Growatt%20voortzetten.md),
 which is context rather than current policy.
 
 The broker must then have an explicit update-transport policy that prevents
