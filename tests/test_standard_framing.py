@@ -236,7 +236,6 @@ def test_standard_reader_returns_function_zero_response() -> None:
 
 
 def test_matching_reader_returns_function_zero_response() -> None:
-    request_frame = add_crc(bytes.fromhex("012100000001"))
     response = add_crc(bytes([0, 0, 1, 2, 3, 4, 5]))
     serial = FakeSerial()
     serial.feed(response)
@@ -421,9 +420,7 @@ def test_static_malformed_buffer_is_crc_scanned_once(reader: str) -> None:
         if reader == "generic":
             result = framer.read_frame(timeout=0.03)
         else:
-            result = framer.read_standard_frame(
-                request(0x04, 0, 125), timeout=0.03
-            )
+            result = framer.read_standard_frame(request(0x04, 0, 125), timeout=0.03)
 
     assert result == b""
     assert framer.scan_calls == 1
