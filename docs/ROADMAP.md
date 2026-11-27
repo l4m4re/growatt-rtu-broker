@@ -170,13 +170,17 @@ such a chunk to 101. For broker-mediated scans, all physical requests must
 still pass through the broker's RTU owner; record failed ranges and zero values
 instead of omitting them.
 
-The HA scanner holds its local gateway lock for the whole campaign, sleeps
-between chunks, retries a transport failure once, and probes once with a
-single-register read before downgrading subsequent reads after a rejected
-block. Only the pacing and per-block recovery lessons transfer directly to a
-shared broker. A broker-side scan must be a bounded low-priority sequence of
-ordinary owner transactions, yielding between blocks so Shine/cloud traffic
-can run; the HA lock cannot provide that system-wide scheduling guarantee.
+The HA scanner holds its local gateway lock for the whole campaign and sleeps
+between chunks. A transport exception gets one reconnect-and-retry attempt.
+After the first Modbus error response for a block, regardless of exception
+code, it makes one single-register probe; if that read succeeds, the remainder
+of that range is scanned one register per request. A failed probe leaves the
+failed block recorded as an error and avoids multiplying that range into
+hundreds of single-register reads.
+Only the pacing and bounded recovery lessons transfer directly to a shared
+broker. A broker-side scan must be a bounded low-priority sequence of ordinary
+owner transactions, yielding between blocks so Shine/cloud traffic can run;
+the HA lock cannot provide that system-wide scheduling guarantee.
 
 A scan's `Read OK (zero value)` means the selected TCP endpoint returned zero;
 it does not say whether PiITM served a fresh cache hit or performed a physical
